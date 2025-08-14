@@ -79,6 +79,18 @@ linked with Shim.
 The compiled binary contains all accelerated implementations of the respective
 cryptographic algorithms which are automatically enabled.
 
+## Compiling Shim with leancrypto
+
+The standard header files installed as part of the regular compilation process
+can also be used for building with Shim.
+
+Note, this implies that the respective include directory needs to be pointed
+to with CFLAGS as follows:
+
+```
+CFLAGS += -I/usr/local/include -DLC_EFI_ENVIRONMENT
+```
+
 ## Linking with Shim
 
 Once leancrypto is compiled, the resulting `libleancrypto.a` needs to be linked
