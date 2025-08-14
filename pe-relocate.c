@@ -10,7 +10,7 @@
  * Perform basic bounds checking of the intra-image pointers
  */
 void *
-ImageAddress (void *image, uint64_t size, uint64_t address)
+ImageAddress (const void *image, uint64_t size, uint64_t address)
 {
 	uintptr_t img_addr;
 
@@ -157,7 +157,7 @@ relocate_coff (PE_COFF_LOADER_IMAGE_CONTEXT *context,
 
 EFI_STATUS
 get_section_vma (UINTN section_num,
-		 char *buffer, size_t bufsz UNUSED,
+		 UINT8 *buffer, size_t bufsz UNUSED,
 		 PE_COFF_LOADER_IMAGE_CONTEXT *context,
 		 char **basep, size_t *sizep,
 		 EFI_IMAGE_SECTION_HEADER **sectionp)
@@ -211,7 +211,7 @@ get_section_vma (UINTN section_num,
 
 EFI_STATUS
 get_section_vma_by_name (char *name, size_t namesz,
-			 char *buffer, size_t bufsz,
+			 UINT8 *buffer, size_t bufsz,
 			 PE_COFF_LOADER_IMAGE_CONTEXT *context,
 			 char **basep, size_t *sizep,
 			 EFI_IMAGE_SECTION_HEADER **sectionp)

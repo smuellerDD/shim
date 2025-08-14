@@ -9,7 +9,9 @@ FEATUREFLAGS	+= -nostdinc
 INCLUDES	= -I$(CRYPTDIR) -I$(CRYPTDIR)/Include \
 		  $(EFI_INCLUDES) \
 		  -isystem $(TOPDIR)/include/system \
-		  -isystem $(shell $(CC) -print-file-name=include)
+		  -isystem $(shell $(CC) -print-file-name=include) \
+		  -I/usr/local/include -DLC_EFI_ENVIRONMENT \
+		  -I$(TOPDIR)/include
 
 WARNFLAGS	+= -Wno-unused-parameter \
 		   -Wno-unused-but-set-variable
@@ -62,11 +64,13 @@ OBJS		=   Hash/CryptMd4Null.o \
 		    Pk/CryptRsaBasic.o \
 		    Pk/CryptRsaExtNull.o \
 		    Pk/CryptPkcs7SignNull.o \
-		    Pk/CryptPkcs7Verify.o \
+		    Pk/CryptPkcs7Verify_openssl.o \
 		    Pk/CryptDhNull.o \
 		    Pk/CryptTs.o \
 		    Pk/CryptX509.o \
+		    Pk/CryptX509_openssl.o \
 		    Pk/CryptAuthenticode.o \
+		    Pk/CryptAuthenticode_openssl.o \
 		    Pem/CryptPemNull.o \
 		    SysCall/CrtWrapper.o \
 		    SysCall/TimerWrapper.o \

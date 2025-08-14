@@ -1,11 +1,52 @@
 #!/bin/bash
 set -e
 
+#
+# Select the desired key type for the key / certificate to be created
+#
+# In the following, these definitions are used:
+#
+# <ML-DSA type> is one of:
+#   ML-DSA87
+#   ML-DSA65
+#   ML-DSA44
+#
+# <SLH-DSA type> is one of:
+#   SLH-DSA-SHAKE-256S
+#   SLH-DSA-SHAKE-256F
+#   SLH-DSA-SHAKE-192S
+#   SLH-DSA-SHAKE-192F
+#   SLH-DSA-SHAKE-128S
+#   SLH-DSA-SHAKE-128F
+#
+# <classic type> is one of:
+#   ED448
+#   ED25519
+
+# ML-DSA Composite keys are specified by a string: <ML-DSA type>-<classic type>
+KEYTYPE="ML-DSA87-ED448"
+
+# ML-DSA keys are specified by a string: <ML-DSA type>
+#KEYTYPE="ML-DSA65-ED25519"
+
+# SLH-DSA keys are specified by a string: <SLH-DSA type>
+#KEYTYPE="SLH-DSA-SHAKE-256S"
+
 touch -r "$BUILDROOT/usr" "$BUILDROOT/etc/.updated" "$BUILDROOT/var/.updated"
 
 mkdir -p "$OUTPUTDIR/mok/"
-openssl req -new -x509 -newkey rsa:2048 -keyout "$OUTPUTDIR/mok/mkosi.key" -out "$OUTPUTDIR/mok/mkosi.crt" -days 3650 -nodes \
-    -subj "/CN=mkosi MOK key" -addext "subjectAltName=DNS:mkosi.local"
+
+lc_x509_generator						\
+  --keyusage keyCertSign					\
+  --keyusage critical						\
+  --ca								\
+  --subject-cn "mkosi MOK key"					\
+  --san-dns "mkosi.local"					\
+  --outfile "$OUTPUTDIR/mok/mkosi.crt"				\
+  --sk-file "$OUTPUTDIR/mok/mkosi.key"				\
+  --valid-days 3650						\
+  --create-keypair ${KEYTYPE}
+
 chmod 0644 "$OUTPUTDIR/mok/mkosi.crt"
 chmod 0600 "$OUTPUTDIR/mok/mkosi.key"
 

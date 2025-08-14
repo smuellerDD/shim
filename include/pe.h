@@ -8,7 +8,7 @@
 #define PE_H_
 
 void *
-ImageAddress (void *image, uint64_t size, uint64_t address);
+ImageAddress (const void *image, uint64_t size, uint64_t address);
 
 EFI_STATUS
 read_header(void *data, unsigned int datasize,
@@ -24,14 +24,14 @@ verify_sbat_section(char *SBATBase, size_t SBATSize);
 
 EFI_STATUS
 get_section_vma (UINTN section_num,
-		 char *buffer, size_t bufsz UNUSED,
+		 UINT8 *buffer, size_t bufsz UNUSED,
 		 PE_COFF_LOADER_IMAGE_CONTEXT *context,
 		 char **basep, size_t *sizep,
 		 EFI_IMAGE_SECTION_HEADER **sectionp);
 
 EFI_STATUS
 get_section_vma_by_name (char *name, size_t namesz,
-			 char *buffer, size_t bufsz,
+			 UINT8 *buffer, size_t bufsz,
 			 PE_COFF_LOADER_IMAGE_CONTEXT *context,
 			 char **basep, size_t *sizep,
 			 EFI_IMAGE_SECTION_HEADER **sectionp);
@@ -51,7 +51,7 @@ void
 flush_cached_sections(EFI_HANDLE parent_image_handle);
 
 EFI_STATUS
-generate_hash (char *data, unsigned int datasize,
+generate_hash (UINT8 *data, unsigned int datasize,
 	       PE_COFF_LOADER_IMAGE_CONTEXT *context,
 	       UINT8 *sha256hash, UINT8 *sha1hash);
 

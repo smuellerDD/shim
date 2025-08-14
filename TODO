@@ -5,9 +5,6 @@
     LoadImage/CheckImage/StartImage.
 - Implement EFI_CERT_X509_SHA{256,384,512} revocation checks
   - It doesn't necessarily have to include timestamp checking support
-- Make the openssl code supply the Pkcs7Verify() API, and use the system
-  one (instead) if it is available.
-  - And make building it optional
 - Get meb30's multiple-certs patch merged
 - Hashing of option roms:
   - hash option roms and add them to MokListRT
