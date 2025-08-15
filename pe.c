@@ -6,18 +6,9 @@
 
 #include "shim.h"
 
-#include <openssl/err.h>
-#include <openssl/bn.h>
-#include <openssl/dh.h>
-#include <openssl/ocsp.h>
-#include <openssl/pkcs12.h>
-#include <openssl/rand.h>
-#include <openssl/crypto.h>
-#include <openssl/ssl.h>
-#include <openssl/x509.h>
-#include <openssl/x509v3.h>
-#include <openssl/rsa.h>
-#include <openssl/dso.h>
+/* define strlen to ensure its definition is not taken from leancrypto */
+#define strlen
+#include <leancrypto.h>
 
 #include <Library/BaseCryptLib.h>
 
@@ -71,7 +62,7 @@ struct shim_section_cache_entry {
 	 * Since this is all internal and there's no API access to it, this is
 	 * currently always sha256 and can be updated as needed.
 	 */
-	UINT8 digest[32];
+	UINT8 digest[LC_SHA256_SIZE_DIGEST];
 };
 
 static struct shim_section_cache_entry *section_cache = NULL;
@@ -120,7 +111,7 @@ validate_cached_section(EFI_HANDLE parent_image_handle,
 
 	for (UINTN i = 0; i < num_section_cache_entries; i++) {
 		struct shim_section_cache_entry *this_entry = &section_cache[i];
-		UINT8 digest[32];
+		UINT8 digest[LC_SHA256_SIZE_DIGEST];
 
 		dprint(L"Handles: 0x%016llx 0x%016llx section: '%a'\n",
 		       (unsigned long long)(uintptr_t)this_entry->parent_image_handle,
@@ -170,18 +161,65 @@ flush_cached_sections(EFI_HANDLE parent_image_handle)
 	num_section_cache_entries -= reduction;
 }
 
+static BOOLEAN EFIAPI HashInit (IN OUT VOID *Sha256Context,
+				IN OUT VOID *Sha1Context)
+{
+	if (Sha256Context && !Sha256Init(Sha256Context)) {
+		perror(L"Unable to initialize SHA256 hash\n");
+		return FALSE;
+	}
+
+	if (Sha1Context && !Sha1Init(Sha1Context)) {
+		perror(L"Unable to initialize SHA1 hash\n");
+		return FALSE;
+	}
+
+	return TRUE;
+}
+
+static BOOLEAN HashUpdate (IN OUT VOID *Sha256Context, IN OUT VOID *Sha1Context,
+			   IN CONST VOID *Data, IN UINTN DataSize)
+{
+	if (Sha256Context && !Sha256Update(Sha256Context, Data, DataSize)) {
+		perror(L"Unable to update SHA256 hash\n");
+		return FALSE;
+	}
+
+	if (Sha1Context && !Sha1Update(Sha1Context, Data, DataSize)) {
+		perror(L"Unable to update SHA1 hash\n");
+		return FALSE;
+	}
+
+	return TRUE;
+}
+
+static BOOLEAN HashFinal (IN OUT VOID *Sha256Context, IN OUT VOID *Sha1Context,
+			  OUT UINT8 *Sha256Value, OUT UINT8 *Sha1Value)
+{
+	if (Sha256Context && !Sha256Final(Sha256Context, Sha256Value)) {
+		perror(L"Unable to generate SHA256 hash\n");
+		return FALSE;
+	}
+
+	if (Sha1Context && !Sha256Final(Sha1Context, Sha1Value)) {
+		perror(L"Unable to generate SHA1 hash\n");
+		return FALSE;
+	}
+
+	return TRUE;
+}
+
 /*
  * Calculate the SHA1 and SHA256 hashes of a binary
  */
-
 EFI_STATUS
-generate_hash(char *data, unsigned int datasize,
+generate_hash(UINT8 *data, unsigned int datasize,
 	      PE_COFF_LOADER_IMAGE_CONTEXT *context, UINT8 *sha256hash,
 	      UINT8 *sha1hash)
 {
 	unsigned int sha256ctxsize, sha1ctxsize;
 	void *sha256ctx = NULL, *sha1ctx = NULL;
-	char *hashbase;
+	const UINT8 *hashbase;
 	unsigned int hashsize;
 	unsigned int SumOfBytesHashed, SumOfSectionBytes;
 	unsigned int index, pos;
@@ -199,52 +237,58 @@ generate_hash(char *data, unsigned int datasize,
 	PEHdr_offset = DosHdr->e_lfanew;
 
 	sha256ctxsize = Sha256GetContextSize();
-	sha256ctx = AllocatePool(sha256ctxsize);
+	if (sha256hash && sha256ctxsize) {
+		sha256ctx = AllocatePool(sha256ctxsize);
 
-	sha1ctxsize = Sha1GetContextSize();
-	sha1ctx = AllocatePool(sha1ctxsize);
-
-	if (!sha256ctx || !sha1ctx) {
-		perror(L"Unable to allocate memory for hash context\n");
-		return EFI_OUT_OF_RESOURCES;
+		if (!sha256ctx) {
+			perror(L"Unable to allocate memory for hash context\n");
+			return EFI_OUT_OF_RESOURCES;
+		}
 	}
 
-	if (!Sha256Init(sha256ctx) || !Sha1Init(sha1ctx)) {
-		perror(L"Unable to initialise hash\n");
+	sha1ctxsize = Sha1GetContextSize();
+	if (sha1hash && sha1ctxsize) {
+		sha1ctx = AllocatePool(sha1ctxsize);
+
+		if (!sha1ctx) {
+			perror(L"Unable to allocate memory for hash context\n");
+			return EFI_OUT_OF_RESOURCES;
+		}
+	}
+
+	if (!HashInit(sha256ctx, sha1ctx)) {
 		efi_status = EFI_OUT_OF_RESOURCES;
 		goto done;
 	}
 
 	/* Hash start to checksum */
 	hashbase = data;
-	hashsize = (char *)&context->PEHdr->Pe32.OptionalHeader.CheckSum -
+	hashsize = (UINT8 *)&context->PEHdr->Pe32.OptionalHeader.CheckSum -
 		hashbase;
 	check_size(data, datasize, hashbase, hashsize);
 
-	if (!(Sha256Update(sha256ctx, hashbase, hashsize)) ||
-	    !(Sha1Update(sha1ctx, hashbase, hashsize))) {
+	if (!HashUpdate(sha256ctx, sha1ctx, hashbase, hashsize)) {
 		perror(L"Unable to generate hash\n");
 		efi_status = EFI_OUT_OF_RESOURCES;
 		goto done;
 	}
 
 	/* Hash post-checksum to start of certificate table */
-	hashbase = (char *)&context->PEHdr->Pe32.OptionalHeader.CheckSum +
+	hashbase = (UINT8 *)&context->PEHdr->Pe32.OptionalHeader.CheckSum +
 		sizeof (int);
-	hashsize = (char *)context->SecDir - hashbase;
+	hashsize = (UINT8 *)context->SecDir - hashbase;
 	check_size(data, datasize, hashbase, hashsize);
 
-	if (!(Sha256Update(sha256ctx, hashbase, hashsize)) ||
-	    !(Sha1Update(sha1ctx, hashbase, hashsize))) {
+	if (!HashUpdate(sha256ctx, sha1ctx, hashbase, hashsize)) {
 		perror(L"Unable to generate hash\n");
 		efi_status = EFI_OUT_OF_RESOURCES;
 		goto done;
 	}
 
 	/* Hash end of certificate table to end of image header */
-	EFI_IMAGE_DATA_DIRECTORY *dd = context->SecDir + 1;
-	hashbase = (char *)dd;
-	hashsize = context->SizeOfHeaders - (unsigned long)((char *)dd - data);
+	const EFI_IMAGE_DATA_DIRECTORY *dd = context->SecDir + 1;
+	hashbase = (const UINT8 *)dd;
+	hashsize = context->SizeOfHeaders - (unsigned long)((UINT8 *)dd - data);
 	if (hashsize > datasize) {
 		perror(L"Data Directory size %d is invalid\n", hashsize);
 		efi_status = EFI_INVALID_PARAMETER;
@@ -252,8 +296,7 @@ generate_hash(char *data, unsigned int datasize,
 	}
 	check_size(data, datasize, hashbase, hashsize);
 
-	if (!(Sha256Update(sha256ctx, hashbase, hashsize)) ||
-	    !(Sha1Update(sha1ctx, hashbase, hashsize))) {
+	if (!HashUpdate(sha256ctx, sha1ctx, hashbase, hashsize)) {
 		perror(L"Unable to generate hash\n");
 		efi_status = EFI_OUT_OF_RESOURCES;
 		goto done;
@@ -382,8 +425,7 @@ generate_hash(char *data, unsigned int datasize,
 		hashsize  = (unsigned int) Section->SizeOfRawData;
 		check_size(data, datasize, hashbase, hashsize);
 
-		if (!(Sha256Update(sha256ctx, hashbase, hashsize)) ||
-		    !(Sha1Update(sha1ctx, hashbase, hashsize))) {
+		if (!HashUpdate(sha256ctx, sha1ctx, hashbase, hashsize)) {
 			perror(L"Unable to generate hash\n");
 			efi_status = EFI_OUT_OF_RESOURCES;
 			goto done;
@@ -408,8 +450,7 @@ generate_hash(char *data, unsigned int datasize,
 		}
 		check_size(data, datasize, hashbase, hashsize);
 
-		if (!(Sha256Update(sha256ctx, hashbase, hashsize)) ||
-		    !(Sha1Update(sha1ctx, hashbase, hashsize))) {
+		if (!HashUpdate(sha256ctx, sha1ctx, hashbase, hashsize)) {
 			perror(L"Unable to generate hash\n");
 			efi_status = EFI_OUT_OF_RESOURCES;
 			goto done;
@@ -430,8 +471,7 @@ generate_hash(char *data, unsigned int datasize,
 
 		check_size(data, datasize, hashbase, hashsize);
 
-		if (!(Sha256Update(sha256ctx, hashbase, hashsize)) ||
-		    !(Sha1Update(sha1ctx, hashbase, hashsize))) {
+		if (!HashUpdate(sha256ctx, sha1ctx, hashbase, hashsize)) {
 			perror(L"Unable to generate hash\n");
 			efi_status = EFI_OUT_OF_RESOURCES;
 			goto done;
@@ -441,8 +481,7 @@ generate_hash(char *data, unsigned int datasize,
 		hashsize = ALIGN_VALUE(SumOfBytesHashed, 8) - SumOfBytesHashed;
 
 		if (hashsize) {
-			if (!(Sha256Update(sha256ctx, padbuf, hashsize)) ||
-			    !(Sha1Update(sha1ctx, padbuf, hashsize))) {
+			if (!HashUpdate(sha256ctx, sha1ctx, padbuf, hashsize)) {
 				perror(L"Unable to generate hash\n");
 				efi_status = EFI_OUT_OF_RESOURCES;
 				goto done;
@@ -450,17 +489,20 @@ generate_hash(char *data, unsigned int datasize,
 		}
 	}
 
-	if (!(Sha256Final(sha256ctx, sha256hash)) ||
-	    !(Sha1Final(sha1ctx, sha1hash))) {
+	if (!HashFinal(sha256ctx, sha1ctx, sha256hash, sha1hash)) {
 		perror(L"Unable to finalise hash\n");
 		efi_status = EFI_OUT_OF_RESOURCES;
 		goto done;
 	}
 
-	dprint(L"sha1 authenticode hash:\n");
-	dhexdumpat(sha1hash, SHA1_DIGEST_SIZE, 0);
-	dprint(L"sha256 authenticode hash:\n");
-	dhexdumpat(sha256hash, SHA256_DIGEST_SIZE, 0);
+	if (sha1hash) {
+		dprint(L"sha1 authenticode hash:\n");
+		dhexdumpat(sha1hash, SHA1_DIGEST_SIZE, 0);
+	}
+	if (sha256hash) {
+		dprint(L"sha256 authenticode hash:\n");
+		dhexdumpat(sha256hash, SHA256_DIGEST_SIZE, 0);
+	}
 
 done:
 	if (SectionHeader)
@@ -541,8 +583,8 @@ EFI_STATUS verify_image(void *data, unsigned int datasize,
 			PE_COFF_LOADER_IMAGE_CONTEXT *context)
 {
 	EFI_STATUS efi_status;
+	UINT8 sha256hash[LC_SHA256_SIZE_DIGEST];
 	UINT8 sha1hash[SHA1_DIGEST_SIZE];
-	UINT8 sha256hash[SHA256_DIGEST_SIZE];
 
 	/*
 	 * The binary header contains relevant context and section pointers
@@ -558,8 +600,7 @@ EFI_STATUS verify_image(void *data, unsigned int datasize,
 	 * in order to load it.
 	 */
 	if (secure_mode()) {
-		efi_status = verify_buffer(data, datasize,
-					   context, sha256hash, sha1hash,
+		efi_status = verify_buffer(data, datasize, sha256hash, context,
 					   false);
 		if (EFI_ERROR(efi_status)) {
 			if (verbose)
@@ -571,19 +612,9 @@ EFI_STATUS verify_image(void *data, unsigned int datasize,
 			console_print(L"Verification succeeded\n");
 	}
 
-	/*
-	 * Calculate the hash for the TPM measurement.
-	 * XXX: We're computing these twice in secure boot mode when the
-	 *  buffers already contain the previously computed hashes. Also,
-	 *  this is only useful for the TPM1.2 case. We should try to fix
-	 *  this in a follow-up.
-	 */
-	efi_status = generate_hash(data, datasize, context, sha256hash,
-				   sha1hash);
-	if (EFI_ERROR(efi_status))
-		return efi_status;
-
 	/* Measure the binary into the TPM */
+	if (!Sha1HashAll (data, datasize, sha1hash))
+		return EFI_OUT_OF_RESOURCES;
 #ifdef REQUIRE_TPM
 	efi_status =
 #endif
@@ -619,8 +650,7 @@ handle_image (void *data, unsigned int datasize,
 	PE_COFF_LOADER_IMAGE_CONTEXT context;
 	unsigned int alloc_size;
 	int found_entry_point = 0;
-	UINT8 sha1hash[SHA1_DIGEST_SIZE];
-	UINT8 sha256hash[SHA256_DIGEST_SIZE];
+	UINT8 sha256hash[LC_SHA256_SIZE_DIGEST];
 
 	/*
 	 * The binary header contains relevant context and section pointers
@@ -636,8 +666,8 @@ handle_image (void *data, unsigned int datasize,
 	 * in order to load it.
 	 */
 	if (secure_mode ()) {
-		efi_status = verify_buffer(data, datasize, &context, sha256hash,
-					   sha1hash, parent_verified);
+		efi_status = verify_buffer(data, datasize, sha256hash, &context,
+					   parent_verified);
 
 		if (EFI_ERROR(efi_status)) {
 			if (verbose || in_protocol)
@@ -658,22 +688,15 @@ handle_image (void *data, unsigned int datasize,
 	 * logging-without-extending, so there's no point.
 	 */
 	if (!parent_verified) {
-		/*
-		 * Calculate the hash for the TPM measurement.
-		 * XXX: We're computing these twice in secure boot mode when the
-		 *  buffers already contain the previously computed hashes. Also,
-		 *  this is only useful for the TPM1.2 case. We should try to fix
-		 *  this in a follow-up.
-		 */
-		efi_status = generate_hash(data, datasize, &context, sha256hash,
-					   sha1hash);
-		if (EFI_ERROR(efi_status))
-			return efi_status;
+		UINT8 sha1hash[SHA1_DIGEST_SIZE];
 
 		/* Measure the binary into the TPM */
+		if (!Sha1HashAll (data, datasize, sha1hash))
+			return EFI_OUT_OF_RESOURCES;
 #ifdef REQUIRE_TPM
 		efi_status =
 #endif
+		/* Use SHA256 digest instead of SHA1 as buffer is sufficiently big */
 		tpm_log_pe((EFI_PHYSICAL_ADDRESS)(UINTN)data, datasize,
 			   (EFI_PHYSICAL_ADDRESS)(UINTN)context.ImageAddress,
 			   li->FilePath, sha1hash, 4);

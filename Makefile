@@ -24,6 +24,7 @@ include $(TOPDIR)/include/coverity.mk
 include $(TOPDIR)/include/scan-build.mk
 include $(TOPDIR)/include/fanalyzer.mk
 
+CFLAGS += -I/usr/local/include -DLC_EFI_ENVIRONMENT
 TARGETS	= $(SHIMNAME)
 TARGETS += $(SHIMNAME).debug $(MMNAME).debug $(FBNAME).debug
 ifneq ($(origin ENABLE_SHIM_HASH),undefined)
@@ -149,6 +150,7 @@ $(SHIMNAME) $(MMNAME) $(FBNAME) : | post-process-pe
 
 LIBS = Cryptlib/libcryptlib.a \
        Cryptlib/OpenSSL/libopenssl.a \
+       /home/sm/hacking/sources/leancrypto/leancrypto/build-shim/libleancrypto.a \
        lib/lib.a \
        gnu-efi/$(ARCH_GNUEFI)/lib/libefi.a \
        gnu-efi/$(ARCH_GNUEFI)/gnuefi/libgnuefi.a

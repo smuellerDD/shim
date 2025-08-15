@@ -2132,6 +2132,14 @@ X509ConstructCertificate (
   IN   UINTN        CertSize,
   OUT  UINT8        **SingleX509Cert
   );
+BOOLEAN
+EFIAPI
+X509ConstructCertificate_openssl (
+  IN   CONST UINT8  *Cert,
+  IN   UINTN        CertSize,
+  OUT  UINT8        **SingleX509Cert
+  );
+
 
 /**
   Construct a X509 stack object from a list of DER-encoded certificate data.
@@ -2169,6 +2177,11 @@ X509ConstructCertificateStack (
 VOID
 EFIAPI
 X509Free (
+  IN  VOID  *X509Cert
+  );
+VOID
+EFIAPI
+X509Free_openssl (
   IN  VOID  *X509Cert
   );
 
@@ -2402,6 +2415,16 @@ Pkcs7Verify (
   IN  CONST UINT8  *InData,
   IN  UINTN        DataLength
   );
+BOOLEAN
+EFIAPI
+Pkcs7Verify_openssl (
+  IN  CONST UINT8  *P7Data,
+  IN  UINTN        P7Length,
+  IN  CONST UINT8  *TrustedCert,
+  IN  UINTN        CertLength,
+  IN  CONST UINT8  *InData,
+  IN  UINTN        DataLength
+  );
 
 #if defined(ENABLE_CODESIGN_EKU)
 /**
@@ -2488,10 +2511,8 @@ Pkcs7GetAttachedContent (
   @param[in]  TrustedCert  Pointer to a trusted/root certificate encoded in DER, which
                            is used for certificate chain verification.
   @param[in]  CertSize     Size of the trusted certificate in bytes.
-  @param[in]  ImageHash    Pointer to the original image file hash value. The procedure
-                           for calculating the image hash value is described in Authenticode
-                           specification.
-  @param[in]  HashSize     Size of Image hash value in bytes.
+  @param[in]  ImageData    Pointer to the original image file data value.
+  @param[in]  ImageSize    Size of Image image value in bytes.
 
   @retval  TRUE   The specified Authenticode Signature is valid.
   @retval  FALSE  Invalid Authenticode Signature.
@@ -2505,8 +2526,18 @@ AuthenticodeVerify (
   IN  UINTN        DataSize,
   IN  CONST UINT8  *TrustedCert,
   IN  UINTN        CertSize,
-  IN  CONST UINT8  *ImageHash,
-  IN  UINTN        HashSize
+  IN  CONST UINT8  *ImageData,
+  IN  UINTN        ImageSize
+  );
+BOOLEAN
+EFIAPI
+AuthenticodeVerify_openssl (
+  IN  CONST UINT8  *AuthData,
+  IN  UINTN        DataSize,
+  IN  CONST UINT8  *TrustedCert,
+  IN  UINTN        CertSize,
+  IN  CONST UINT8  *ImageData,
+  IN  UINTN        ImageSize
   );
 
 /**

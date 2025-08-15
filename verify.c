@@ -3,6 +3,7 @@
  * verify.c - verification routines for UEFI Secure Boot
  * Copyright Peter Jones <pjones@redhat.com>
  * Copyright Matthew Garrett
+ * Copyright Stephan Mueller
  *
  * Significant portions of this code are derived from Tianocore
  * (http://tianocore.sf.net) and are Copyright 2009-2012 Intel
@@ -24,9 +25,11 @@
 #include <openssl/rsa.h>
 #include <openssl/dso.h>
 
-#include <Library/BaseCryptLib.h>
+/* define strlen to ensure its definition is not taken from leancrypto */
+#define strlen
+#include <leancrypto.h>
 
-#define OID_EKU_MODSIGN "1.3.6.1.4.1.2312.16.1.2"
+#include <Library/BaseCryptLib.h>
 
 typedef enum {
 	DATA_FOUND,
@@ -99,45 +102,10 @@ verify_x509(UINT8 *Cert, UINTN CertSize)
 	return TRUE;
 }
 
-static BOOLEAN
-verify_eku(UINT8 *Cert, UINTN CertSize)
-{
-	X509 *x509;
-	CONST UINT8 *Temp = Cert;
-	EXTENDED_KEY_USAGE *eku;
-	ASN1_OBJECT *module_signing;
-
-        module_signing = OBJ_nid2obj(OBJ_create(OID_EKU_MODSIGN,
-                                                "modsign-eku",
-                                                "modsign-eku"));
-
-	x509 = d2i_X509 (NULL, &Temp, (long) CertSize);
-	if (x509 != NULL) {
-		eku = X509_get_ext_d2i(x509, NID_ext_key_usage, NULL, NULL);
-
-		if (eku) {
-			int i = 0;
-			for (i = 0; i < sk_ASN1_OBJECT_num(eku); i++) {
-				ASN1_OBJECT *key_usage = sk_ASN1_OBJECT_value(eku, i);
-
-				if (OBJ_cmp(module_signing, key_usage) == 0)
-					return FALSE;
-			}
-			EXTENDED_KEY_USAGE_free(eku);
-		}
-
-		X509_free(x509);
-	}
-
-	OBJ_cleanup();
-
-	return TRUE;
-}
-
 static CHECK_STATUS
 check_db_cert_in_ram(EFI_SIGNATURE_LIST *CertList, UINTN dbsize,
-                     WIN_CERTIFICATE_EFI_PKCS *data, UINT8 *hash,
-                     CHAR16 *dbname, EFI_GUID guid)
+		     WIN_CERTIFICATE_EFI_PKCS *data, const UINT8 *signed_data,
+		     UINT32 signed_datasize, CHAR16 *dbname, EFI_GUID guid)
 {
 	EFI_SIGNATURE_DATA *Cert;
 	UINTN CertSize;
@@ -150,21 +118,18 @@ check_db_cert_in_ram(EFI_SIGNATURE_LIST *CertList, UINTN dbsize,
 			CertSize = CertList->SignatureSize - sizeof(EFI_GUID);
 			dprint(L"trying to verify cert %d (%s)\n", i++, dbname);
 			if (verify_x509(Cert->SignatureData, CertSize)) {
-				if (verify_eku(Cert->SignatureData, CertSize)) {
-					drain_openssl_errors();
-					IsFound = AuthenticodeVerify (data->CertData,
-								      data->Hdr.dwLength - sizeof(data->Hdr),
-								      Cert->SignatureData,
-								      CertSize,
-								      hash, SHA256_DIGEST_SIZE);
-					if (IsFound) {
-						dprint(L"AuthenticodeVerify() succeeded: %d\n", IsFound);
-						tpm_measure_variable(dbname, guid, CertList->SignatureSize, Cert);
-						drain_openssl_errors();
-						return DATA_FOUND;
-					} else {
-						LogError(L"AuthenticodeVerify(): %d\n", IsFound);
-					}
+				IsFound = AuthenticodeVerify (data->CertData,
+							      data->Hdr.dwLength - sizeof(data->Hdr),
+							      Cert->SignatureData,
+							      CertSize,
+							      signed_data,
+							      signed_datasize);
+				if (IsFound) {
+					dprint(L"AuthenticodeVerify() succeeded: %d\n", IsFound);
+					tpm_measure_variable(dbname, guid, CertList->SignatureSize, Cert);
+					return DATA_FOUND;
+				} else {
+					LogError(L"AuthenticodeVerify(): %d\n", IsFound);
 				}
 			} else if (verbose) {
 				console_print(L"Not a DER encoded x.509 Certificate");
@@ -182,7 +147,7 @@ check_db_cert_in_ram(EFI_SIGNATURE_LIST *CertList, UINTN dbsize,
 
 static CHECK_STATUS
 check_db_cert(CHAR16 *dbname, EFI_GUID guid, WIN_CERTIFICATE_EFI_PKCS *data,
-              UINT8 *hash)
+	      const UINT8 *signed_data, UINT32 signed_datasize)
 {
 	CHECK_STATUS rc;
 	EFI_STATUS efi_status;
@@ -190,13 +155,18 @@ check_db_cert(CHAR16 *dbname, EFI_GUID guid, WIN_CERTIFICATE_EFI_PKCS *data,
 	UINTN dbsize = 0;
 	UINT8 *db;
 
+	/* If no hash is provided, report success */
+	if (!data)
+		return VAR_NOT_FOUND;
+
 	efi_status = get_variable(dbname, &db, &dbsize, guid);
 	if (EFI_ERROR(efi_status))
 		return VAR_NOT_FOUND;
 
 	CertList = (EFI_SIGNATURE_LIST *)db;
 
-	rc = check_db_cert_in_ram(CertList, dbsize, data, hash, dbname, guid);
+	rc = check_db_cert_in_ram(CertList, dbsize, data, signed_data,
+				  signed_datasize, dbname, guid);
 
 	FreePool(db);
 
@@ -207,23 +177,26 @@ check_db_cert(CHAR16 *dbname, EFI_GUID guid, WIN_CERTIFICATE_EFI_PKCS *data,
  * Check a hash against an EFI_SIGNATURE_LIST in a buffer
  */
 static CHECK_STATUS
-check_db_hash_in_ram(EFI_SIGNATURE_LIST *CertList, UINTN dbsize, UINT8 *data,
-                     int SignatureSize, EFI_GUID CertType, CHAR16 *dbname,
-                     EFI_GUID guid)
+check_db_hash_in_ram(EFI_SIGNATURE_LIST *CertList, UINTN dbsize,
+		     const UINT8 *data, UINT32 datasize, EFI_GUID CertType,
+		     CHAR16 *dbname, EFI_GUID guid)
 {
 	EFI_SIGNATURE_DATA *Cert;
 	UINTN CertCount, Index;
 	BOOLEAN IsFound = FALSE;
+
+	/* If no hash is provided, report success */
+	if (!data)
+		return DATA_FOUND;
 
 	while ((dbsize > 0) && (dbsize >= CertList->SignatureListSize)) {
 		CertCount = (CertList->SignatureListSize -sizeof (EFI_SIGNATURE_LIST) - CertList->SignatureHeaderSize) / CertList->SignatureSize;
 		Cert = (EFI_SIGNATURE_DATA *) ((UINT8 *) CertList + sizeof (EFI_SIGNATURE_LIST) + CertList->SignatureHeaderSize);
 		if (CompareGuid(&CertList->SignatureType, &CertType) == 0) {
 			for (Index = 0; Index < CertCount; Index++) {
-				if (CompareMem (Cert->SignatureData, data, SignatureSize) == 0) {
-					//
-					// Find the signature in database.
-					//
+				if (CompareMem (Cert->SignatureData, data,
+						datasize) == 0) {
+					/* Find the signature in database. */
 					IsFound = TRUE;
 					tpm_measure_variable(dbname, guid, CertList->SignatureSize, Cert);
 					break;
@@ -250,13 +223,17 @@ check_db_hash_in_ram(EFI_SIGNATURE_LIST *CertList, UINTN dbsize, UINT8 *data,
  * Check a hash against an EFI_SIGNATURE_LIST in a UEFI variable
  */
 static CHECK_STATUS
-check_db_hash(CHAR16 *dbname, EFI_GUID guid, UINT8 *data, int SignatureSize,
+check_db_hash(CHAR16 *dbname, EFI_GUID guid, const UINT8 *data, UINT32 datasize,
               EFI_GUID CertType)
 {
 	EFI_STATUS efi_status;
 	EFI_SIGNATURE_LIST *CertList;
 	UINTN dbsize = 0;
 	UINT8 *db;
+
+	/* If no hash is provided, report success */
+	if (!data)
+		return DATA_FOUND;
 
 	efi_status = get_variable(dbname, &db, &dbsize, guid);
 	if (EFI_ERROR(efi_status)) {
@@ -265,9 +242,8 @@ check_db_hash(CHAR16 *dbname, EFI_GUID guid, UINT8 *data, int SignatureSize,
 
 	CertList = (EFI_SIGNATURE_LIST *)db;
 
-	CHECK_STATUS rc = check_db_hash_in_ram(CertList, dbsize, data,
-					       SignatureSize, CertType,
-					       dbname, guid);
+	CHECK_STATUS rc = check_db_hash_in_ram(CertList, dbsize, data, datasize,
+					       CertType, dbname, guid);
 	FreePool(db);
 	return rc;
 }
@@ -277,8 +253,8 @@ check_db_hash(CHAR16 *dbname, EFI_GUID guid, UINT8 *data, int SignatureSize,
  * built-in denylist
  */
 static EFI_STATUS
-check_denylist(WIN_CERTIFICATE_EFI_PKCS *cert, UINT8 *sha256hash,
-               UINT8 *sha1hash)
+check_denylist(WIN_CERTIFICATE_EFI_PKCS *cert, const UINT8 *data,
+	       UINT32 datasize, const UINT8 *sha256hash, const UINT8 *sha1hash)
 {
 	EFI_SIGNATURE_LIST *dbx = (EFI_SIGNATURE_LIST *)vendor_deauthorized;
 
@@ -295,9 +271,10 @@ check_denylist(WIN_CERTIFICATE_EFI_PKCS *cert, UINT8 *sha256hash,
 		return EFI_SECURITY_VIOLATION;
 	}
 	if (cert &&
-	    check_db_cert_in_ram(dbx, vendor_deauthorized_size, cert, sha256hash, L"dbx",
-				 EFI_SECURE_BOOT_DB_GUID) == DATA_FOUND) {
-		LogError(L"cert sha256hash found in vendor dbx\n");
+	    check_db_cert_in_ram(dbx, vendor_deauthorized_size, cert, data,
+				 datasize, L"dbx", EFI_SECURE_BOOT_DB_GUID) ==
+				 DATA_FOUND) {
+		LogError(L"cert certificate found in vendor dbx\n");
 		return EFI_SECURITY_VIOLATION;
 	}
 	if (check_db_hash(L"dbx", EFI_SECURE_BOOT_DB_GUID, sha256hash,
@@ -312,8 +289,8 @@ check_denylist(WIN_CERTIFICATE_EFI_PKCS *cert, UINT8 *sha256hash,
 	}
 	if (cert &&
 	    check_db_cert(L"dbx", EFI_SECURE_BOOT_DB_GUID,
-			  cert, sha256hash) == DATA_FOUND) {
-		LogError(L"cert sha256hash found in system dbx\n");
+			  cert, data, datasize) == DATA_FOUND) {
+		LogError(L"cert certificate found in system dbx\n");
 		return EFI_SECURITY_VIOLATION;
 	}
 	if (check_db_hash(L"MokListX", SHIM_LOCK_GUID, sha256hash,
@@ -323,8 +300,8 @@ check_denylist(WIN_CERTIFICATE_EFI_PKCS *cert, UINT8 *sha256hash,
 	}
 	if (cert &&
 	    check_db_cert(L"MokListX", SHIM_LOCK_GUID,
-			  cert, sha256hash) == DATA_FOUND) {
-		LogError(L"cert sha256hash found in Mok dbx\n");
+			  cert, data, datasize) == DATA_FOUND) {
+		LogError(L"cert certificate found in Mok dbx\n");
 		return EFI_SECURITY_VIOLATION;
 	}
 
@@ -343,8 +320,8 @@ update_verification_method(verification_method_t method)
  * Check whether the binary signature or hash are present in db or MokList
  */
 static EFI_STATUS
-check_allowlist(WIN_CERTIFICATE_EFI_PKCS *cert, UINT8 *sha256hash,
-                UINT8 *sha1hash)
+check_allowlist(WIN_CERTIFICATE_EFI_PKCS *cert, const UINT8 *data,
+		UINT32 datasize, const UINT8 *sha256hash, const UINT8 *sha1hash)
 {
 	if (!ignore_db) {
 		if (check_db_hash(L"db", EFI_SECURE_BOOT_DB_GUID, sha256hash, SHA256_DIGEST_SIZE,
@@ -362,13 +339,14 @@ check_allowlist(WIN_CERTIFICATE_EFI_PKCS *cert, UINT8 *sha256hash,
 		} else {
 			LogError(L"check_db_hash(db, sha1hash) != DATA_FOUND\n");
 		}
-		if (cert && check_db_cert(L"db", EFI_SECURE_BOOT_DB_GUID, cert, sha256hash)
+		if (cert && check_db_cert(L"db", EFI_SECURE_BOOT_DB_GUID, cert,
+					  data, datasize)
 					== DATA_FOUND) {
 			verification_method = VERIFIED_BY_CERT;
 			update_verification_method(VERIFIED_BY_CERT);
 			return EFI_SUCCESS;
 		} else if (cert) {
-			LogError(L"check_db_cert(db, sha256hash) != DATA_FOUND\n");
+			LogError(L"check_db_cert(db, certificate) != DATA_FOUND\n");
 		}
 	}
 
@@ -387,13 +365,13 @@ check_allowlist(WIN_CERTIFICATE_EFI_PKCS *cert, UINT8 *sha256hash,
 	}
 	if (cert &&
 	    check_db_cert_in_ram(db, vendor_db_size,
-				 cert, sha256hash, L"vendor_db",
+				 cert, data, datasize, L"vendor_db",
 				 EFI_SECURE_BOOT_DB_GUID) == DATA_FOUND) {
 		verification_method = VERIFIED_BY_CERT;
 		update_verification_method(VERIFIED_BY_CERT);
 		return EFI_SUCCESS;
 	} else if (cert) {
-		LogError(L"check_db_cert(vendor_db, sha256hash) != DATA_FOUND\n");
+		LogError(L"check_db_cert(vendor_db, certificate) != DATA_FOUND\n");
 	}
 #endif
 
@@ -406,13 +384,14 @@ check_allowlist(WIN_CERTIFICATE_EFI_PKCS *cert, UINT8 *sha256hash,
 	} else {
 		LogError(L"check_db_hash(MokListRT, sha256hash) != DATA_FOUND\n");
 	}
-	if (cert && check_db_cert(L"MokListRT", SHIM_LOCK_GUID, cert, sha256hash)
+	if (cert && check_db_cert(L"MokListRT", SHIM_LOCK_GUID, cert, data,
+				  datasize)
 			== DATA_FOUND) {
 		verification_method = VERIFIED_BY_CERT;
 		update_verification_method(VERIFIED_BY_CERT);
 		return EFI_SUCCESS;
 	} else if (cert) {
-		LogError(L"check_db_cert(MokListRT, sha256hash) != DATA_FOUND\n");
+		LogError(L"check_db_cert(MokListRT, certificate) != DATA_FOUND\n");
 	}
 
 	update_verification_method(VERIFIED_BY_NOTHING);
@@ -420,8 +399,9 @@ check_allowlist(WIN_CERTIFICATE_EFI_PKCS *cert, UINT8 *sha256hash,
 }
 
 static EFI_STATUS
-verify_one_signature(WIN_CERTIFICATE_EFI_PKCS *sig, UINT8 *sha256hash,
-                     UINT8 *sha1hash)
+verify_one_signature(WIN_CERTIFICATE_EFI_PKCS *sig, const UINT8 *data,
+		     UINT32 datasize, const UINT8 *sha256hash,
+		     const UINT8 *sha1hash)
 {
 	EFI_STATUS efi_status;
 
@@ -429,7 +409,7 @@ verify_one_signature(WIN_CERTIFICATE_EFI_PKCS *sig, UINT8 *sha256hash,
 	 * Ensure that the binary isn't forbidden
 	 */
 	drain_openssl_errors();
-	efi_status = check_denylist(sig, sha256hash, sha1hash);
+	efi_status = check_denylist(sig, data, datasize, sha256hash, sha1hash);
 	if (EFI_ERROR(efi_status)) {
 		perror(L"Binary is forbidden: %r\n", efi_status);
 		PrintErrors();
@@ -443,7 +423,7 @@ verify_one_signature(WIN_CERTIFICATE_EFI_PKCS *sig, UINT8 *sha256hash,
 	 * databases
 	 */
 	drain_openssl_errors();
-	efi_status = check_allowlist(sig, sha256hash, sha1hash);
+	efi_status = check_allowlist(sig, data, datasize, sha256hash, sha1hash);
 	if (EFI_ERROR(efi_status)) {
 		if (efi_status != EFI_NOT_FOUND) {
 			dprint(L"check_allowlist(): %r\n", efi_status);
@@ -468,8 +448,7 @@ verify_one_signature(WIN_CERTIFICATE_EFI_PKCS *sig, UINT8 *sha256hash,
 	if (build_cert && build_cert_size &&
 	    AuthenticodeVerify(sig->CertData,
 		       sig->Hdr.dwLength - sizeof(sig->Hdr),
-		       build_cert, build_cert_size, sha256hash,
-		       SHA256_DIGEST_SIZE)) {
+		       build_cert, build_cert_size, data, datasize)) {
 		dprint(L"AuthenticodeVerify(shim_cert) succeeded\n");
 		update_verification_method(VERIFIED_BY_CERT);
 		tpm_measure_variable(L"Shim", SHIM_LOCK_GUID,
@@ -497,7 +476,7 @@ verify_one_signature(WIN_CERTIFICATE_EFI_PKCS *sig, UINT8 *sha256hash,
 	    AuthenticodeVerify(sig->CertData,
 			       sig->Hdr.dwLength - sizeof(sig->Hdr),
 			       vendor_cert, vendor_cert_size,
-			       sha256hash, SHA256_DIGEST_SIZE)) {
+			       data, datasize)) {
 		dprint(L"AuthenticodeVerify(vendor_cert) succeeded\n");
 		update_verification_method(VERIFIED_BY_CERT);
 		tpm_measure_variable(L"Shim", SHIM_LOCK_GUID,
@@ -520,9 +499,9 @@ verify_one_signature(WIN_CERTIFICATE_EFI_PKCS *sig, UINT8 *sha256hash,
  * Check that the signature is valid and matches the binary
  */
 static EFI_STATUS
-verify_buffer_authenticode (char *data, int datasize,
+verify_buffer_authenticode (UINT8 *data, UINT32 datasize,
+			    UINT8 *sha256hash,
 			    PE_COFF_LOADER_IMAGE_CONTEXT *context,
-			    UINT8 *sha256hash, UINT8 *sha1hash,
 			    bool parent_verified)
 {
 	EFI_STATUS ret_efi_status;
@@ -530,17 +509,10 @@ verify_buffer_authenticode (char *data, int datasize,
 	size_t offset = 0;
 	unsigned int i = 0;
 
-	if (datasize < 0)
-		return EFI_INVALID_PARAMETER;
-
-	/*
-	 * Clear OpenSSL's error log, because we get some DSO unimplemented
-	 * errors during its intialization, and we don't want those to look
-	 * like they're the reason for validation failures.
-	 */
 	drain_openssl_errors();
 
-	ret_efi_status = generate_hash(data, datasize, context, sha256hash, sha1hash);
+	ret_efi_status = generate_hash(data, datasize, context, sha256hash,
+				       NULL);
 	if (EFI_ERROR(ret_efi_status)) {
 		dprint(L"generate_hash: %r\n", ret_efi_status);
 		PrintErrors();
@@ -553,7 +525,7 @@ verify_buffer_authenticode (char *data, int datasize,
 	 * Ensure that the binary isn't forbidden by hash
 	 */
 	drain_openssl_errors();
-	ret_efi_status = check_denylist(NULL, sha256hash, sha1hash);
+	ret_efi_status = check_denylist(NULL, data, datasize, sha256hash, NULL);
 	if (EFI_ERROR(ret_efi_status)) {
 //		perror(L"Binary is forbidden\n");
 //		dprint(L"Binary is forbidden: %r\n", ret_efi_status);
@@ -571,7 +543,8 @@ verify_buffer_authenticode (char *data, int datasize,
 	 * firmware databases
 	 */
 	drain_openssl_errors();
-	ret_efi_status = check_allowlist(NULL, sha256hash, sha1hash);
+	ret_efi_status = check_allowlist(NULL, data, datasize, sha256hash,
+					 NULL);
 	if (EFI_ERROR(ret_efi_status)) {
 		LogError(L"check_allowlist(): %r\n", ret_efi_status);
 		dprint(L"check_allowlist: %r\n", ret_efi_status);
@@ -638,7 +611,8 @@ verify_buffer_authenticode (char *data, int datasize,
 
 			dprint(L"Attempting to verify signature %d:\n", i++);
 
-			efi_status = verify_one_signature(sig, sha256hash, sha1hash);
+			efi_status = verify_one_signature(sig, data, datasize,
+							  sha256hash, NULL);
 
 			/*
 			 * If we didn't get EFI_SECURITY_VIOLATION from
@@ -664,6 +638,7 @@ verify_buffer_authenticode (char *data, int datasize,
 		crypterr(EFI_SECURITY_VIOLATION);
 		ret_efi_status = EFI_SECURITY_VIOLATION;
 	}
+
 	drain_openssl_errors();
 	return ret_efi_status;
 }
@@ -672,7 +647,7 @@ verify_buffer_authenticode (char *data, int datasize,
  * Check that the binary is permitted to load by SBAT.
  */
 static EFI_STATUS
-verify_buffer_sbat (char *data, int datasize,
+verify_buffer_sbat (const UINT8 *data, UINT32 datasize,
 		    PE_COFF_LOADER_IMAGE_CONTEXT *context)
 {
 	int i;
@@ -732,16 +707,14 @@ verify_buffer_sbat (char *data, int datasize,
  * the binary is permitted to load by SBAT.
  */
 EFI_STATUS
-verify_buffer (char *data, int datasize,
+verify_buffer (UINT8 *data, UINT32 datasize, UINT8 *sha256hash,
 	       PE_COFF_LOADER_IMAGE_CONTEXT *context,
-	       UINT8 *sha256hash, UINT8 *sha1hash,
 	       bool parent_verified)
 {
 	EFI_STATUS efi_status;
 
-	efi_status = verify_buffer_authenticode(data, datasize, context,
-						sha256hash, sha1hash,
-						parent_verified);
+	efi_status = verify_buffer_authenticode(data, datasize, sha256hash,
+						context, parent_verified);
 	if (EFI_ERROR(efi_status))
 		return efi_status;
 
@@ -753,12 +726,11 @@ verify_buffer (char *data, int datasize,
  * buffer is signed with a trusted key.
  */
 EFI_STATUS
-shim_verify(void *buffer, UINT32 size)
+shim_verify(UINT8 *buffer, UINT32 size)
 {
 	EFI_STATUS efi_status = EFI_SUCCESS;
 	PE_COFF_LOADER_IMAGE_CONTEXT context;
-	UINT8 sha1hash[SHA1_DIGEST_SIZE];
-	UINT8 sha256hash[SHA256_DIGEST_SIZE];
+	UINT8 sha256hash[LC_SHA256_SIZE_DIGEST];
 
 	if ((INT32)size < 0)
 		return EFI_INVALID_PARAMETER;
@@ -769,8 +741,7 @@ shim_verify(void *buffer, UINT32 size)
 	if (EFI_ERROR(efi_status))
 		goto done;
 
-	efi_status = generate_hash(buffer, size, &context,
-				   sha256hash, sha1hash);
+	efi_status = generate_hash(buffer, size, &context, sha256hash, NULL);
 	if (EFI_ERROR(efi_status))
 		goto done;
 
@@ -779,27 +750,26 @@ shim_verify(void *buffer, UINT32 size)
 	efi_status =
 #endif
 	tpm_log_pe((EFI_PHYSICAL_ADDRESS)(UINTN)buffer, size, 0, NULL,
-		   sha1hash, 4);
+		   sha256hash, 4);
 #ifdef REQUIRE_TPM
 	if (EFI_ERROR(efi_status))
 		goto done;
 #endif
 
-	if (!secure_mode()) {
-		efi_status = EFI_SUCCESS;
-		goto done;
+	if (secure_mode()) {
+		efi_status = verify_buffer(buffer, size, sha256hash, &context,
+					   false);
+		if (EFI_ERROR(efi_status))
+			goto done;
 	}
 
-	efi_status = verify_buffer(buffer, size,
-				   &context, sha256hash, sha1hash,
-				   false);
 done:
 	in_protocol = 0;
 	return efi_status;
 }
 
 EFI_STATUS
-shim_hash(char *data, int datasize, PE_COFF_LOADER_IMAGE_CONTEXT *context,
+shim_hash(UINT8 *data, int datasize, PE_COFF_LOADER_IMAGE_CONTEXT *context,
           UINT8 *sha256hash, UINT8 *sha1hash)
 {
 	EFI_STATUS efi_status;

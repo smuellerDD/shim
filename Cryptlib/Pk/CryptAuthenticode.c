@@ -22,6 +22,7 @@ WITHOUT WARRANTIES OR REPRESENTATIONS OF ANY KIND, EITHER EXPRESS OR IMPLIED.
 
 #include "InternalCryptLib.h"
 
+#include <openssl/x509v3.h>
 #include <openssl/objects.h>
 #include <openssl/x509.h>
 #include <openssl/pkcs7.h>
@@ -32,6 +33,43 @@ WITHOUT WARRANTIES OR REPRESENTATIONS OF ANY KIND, EITHER EXPRESS OR IMPLIED.
 UINT8 mSpcIndirectOidValue[] = {
   0x2B, 0x06, 0x01, 0x04, 0x01, 0x82, 0x37, 0x02, 0x01, 0x04
   };
+
+#define OID_EKU_MODSIGN "1.3.6.1.4.1.2312.16.1.2"
+
+static BOOLEAN
+verify_eku(const UINT8 *Cert, UINTN CertSize)
+{
+	X509 *x509;
+	CONST UINT8 *Temp = Cert;
+	EXTENDED_KEY_USAGE *eku;
+	ASN1_OBJECT *module_signing;
+
+	module_signing = OBJ_nid2obj(OBJ_create(OID_EKU_MODSIGN,
+						"modsign-eku",
+						"modsign-eku"));
+
+	x509 = d2i_X509 (NULL, &Temp, (long) CertSize);
+	if (x509 != NULL) {
+		eku = X509_get_ext_d2i(x509, NID_ext_key_usage, NULL, NULL);
+
+		if (eku) {
+			int i = 0;
+			for (i = 0; i < sk_ASN1_OBJECT_num(eku); i++) {
+				ASN1_OBJECT *key_usage = sk_ASN1_OBJECT_value(eku, i);
+
+				if (OBJ_cmp(module_signing, key_usage) == 0)
+					return FALSE;
+			}
+			EXTENDED_KEY_USAGE_free(eku);
+		}
+
+		X509Free_openssl(x509);
+	}
+
+	OBJ_cleanup();
+
+	return TRUE;
+}
 
 /**
   Verifies the validity of a PE/COFF Authenticode Signature as described in "Windows
@@ -61,13 +99,13 @@ UINT8 mSpcIndirectOidValue[] = {
 **/
 BOOLEAN
 EFIAPI
-AuthenticodeVerify (
+AuthenticodeVerify_openssl (
   IN  CONST UINT8  *AuthData,
   IN  UINTN        DataSize,
   IN  CONST UINT8  *TrustedCert,
   IN  UINTN        CertSize,
-  IN  CONST UINT8  *ImageHash,
-  IN  UINTN        HashSize
+  IN  CONST UINT8  *ImageData,
+  IN  UINTN        ImageSize
   )
 {
   BOOLEAN      Status;
@@ -78,17 +116,24 @@ AuthenticodeVerify (
   UINT8        Asn1Byte;
   UINTN        ContentSize;
   CONST UINT8  *SpcIndirectDataOid;
+  UINT8 ImageHash[SHA256_DIGEST_SIZE];
 
   //
   // Check input parameters.
   //
-  if ((AuthData == NULL) || (TrustedCert == NULL) || (ImageHash == NULL)) {
+  if ((AuthData == NULL) || (TrustedCert == NULL) || (ImageData == NULL)) {
     return FALSE;
   }
 
-  if ((DataSize > INT_MAX) || (CertSize > INT_MAX) || (HashSize > INT_MAX)) {
+  if ((DataSize > INT_MAX) || (CertSize > INT_MAX) || (ImageSize > INT_MAX)) {
     return FALSE;
   }
+
+  if (!verify_eku(TrustedCert, CertSize))
+    return FALSE;
+
+  if (!Sha256HashAll (ImageData, ImageSize, ImageHash))
+	  return FALSE;
 
   Status       = FALSE;
   Pkcs7        = NULL;
@@ -176,7 +221,8 @@ AuthenticodeVerify (
   // defined in Authenticode
   // NOTE: Need to double-check HashLength here!
   //
-  if (CompareMem (SpcIndirectDataContent + ContentSize - HashSize, ImageHash, HashSize) != 0) {
+  if (CompareMem (SpcIndirectDataContent + ContentSize - sizeof(ImageHash),
+		  ImageHash, sizeof(ImageHash)) != 0) {
     //
     // Un-matched PE/COFF Hash Value
     //
@@ -186,7 +232,7 @@ AuthenticodeVerify (
   //
   // Verifies the PKCS#7 Signed Data in PE/COFF Authenticode Signature
   //
-  Status = (BOOLEAN) Pkcs7Verify (OrigAuthData, DataSize, TrustedCert, CertSize, SpcIndirectDataContent, ContentSize);
+  Status = (BOOLEAN) Pkcs7Verify_openssl (OrigAuthData, DataSize, TrustedCert, CertSize, SpcIndirectDataContent, ContentSize);
 
 _Exit:
   //

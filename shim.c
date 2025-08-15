@@ -16,6 +16,9 @@
 #include "shim_cert.h"
 #endif /* defined(ENABLE_SHIM_CERT) */
 
+/* define strlen to ensure its definition is not taken from leancrypto */
+#define strlen
+#include <leancrypto.h>
 #include <stdint.h>
 
 static EFI_SYSTEM_TABLE *systab;
@@ -1185,6 +1188,11 @@ efi_main (EFI_HANDLE passed_image_handle, EFI_SYSTEM_TABLE *passed_systab)
 	InitializeLib(image_handle, systab);
 	setup_verbosity();
 
+	dprint(L"attempting to initialize leancrypto\n");
+	if (lc_init(0)) {
+		return FALSE;
+	}
+
 	dprint(L"vendor_authorized:0x%08lx vendor_authorized_size:%lu\n",
 	       vendor_authorized, vendor_authorized_size);
 	dprint(L"vendor_deauthorized:0x%08lx vendor_deauthorized_size:%lu\n",
@@ -1307,3 +1315,15 @@ die:
 	devel_egress(EFI_ERROR(efi_status) ? EXIT_FAILURE : EXIT_SUCCESS);
 	return efi_status;
 }
+
+#ifdef __aarch64__
+/*
+ * Provide "fake" implementation to compile code on AARCH64, see
+ * https://gcc.gnu.org/bugzilla/show_bug.cgi?id=91833
+ */
+unsigned long int __getauxval (unsigned long int __unused)
+{
+	(void)__unused;
+	return 0;
+}
+#endif

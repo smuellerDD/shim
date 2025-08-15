@@ -78,7 +78,7 @@ static int cert_in_store(X509 *cert, X509_STORE_CTX *ctx)
 #endif
 
 int
-X509VerifyCb (
+X509VerifyCb_openssl (
   IN int            Status,
   IN X509_STORE_CTX *Context
   )
@@ -143,7 +143,7 @@ X509VerifyCb (
 
 **/
 BOOLEAN
-WrapPkcs7Data (
+WrapPkcs7Data_openssl (
   IN  CONST UINT8  *P7Data,
   IN  UINTN        P7Length,
   OUT BOOLEAN      *WrapFlag,
@@ -241,7 +241,7 @@ WrapPkcs7Data (
 
 **/
 BOOLEAN
-X509PopCertificate (
+X509PopCertificate_openssl (
   IN  VOID  *X509Stack,
   OUT UINT8 **Cert,
   OUT UINTN *CertSize
@@ -339,7 +339,7 @@ _Exit:
 **/
 BOOLEAN
 EFIAPI
-Pkcs7GetSigners (
+Pkcs7GetSigners_openssl (
   IN  CONST UINT8  *P7Data,
   IN  UINTN        P7Length,
   OUT UINT8        **CertStack,
@@ -368,7 +368,7 @@ Pkcs7GetSigners (
     return FALSE;
   }
 
-  Status = WrapPkcs7Data (P7Data, P7Length, &Wrapped, &SignedData, &SignedDataSize);
+  Status = WrapPkcs7Data_openssl (P7Data, P7Length, &Wrapped, &SignedData, &SignedDataSize);
   if (!Status) {
     return Status;
   }
@@ -420,7 +420,7 @@ Pkcs7GetSigners (
   OldSize    = BufferSize;
 
   for (Index = 0; ; Index++) {
-    Status = X509PopCertificate (Stack, &SingleCert, &SingleCertSize);
+    Status = X509PopCertificate_openssl (Stack, &SingleCert, &SingleCertSize);
     if (!Status) {
       break;
     }
@@ -505,7 +505,7 @@ _Exit:
 **/
 VOID
 EFIAPI
-Pkcs7FreeSigners (
+Pkcs7FreeSigners_openssl (
   IN  UINT8        *Certs
   )
 {
@@ -537,7 +537,7 @@ Pkcs7FreeSigners (
 **/
 BOOLEAN
 EFIAPI
-Pkcs7GetCertificatesList (
+Pkcs7GetCertificatesList_openssl (
   IN  CONST UINT8  *P7Data,
   IN  UINTN        P7Length,
   OUT UINT8        **SignerChainCerts,
@@ -596,7 +596,7 @@ Pkcs7GetCertificatesList (
   //
   // Construct a new PKCS#7 data wrapping with ContentInfo structure if needed.
   //
-  Status = WrapPkcs7Data (P7Data, P7Length, &Wrapped, &NewP7Data, &NewP7Length);
+  Status = WrapPkcs7Data_openssl (P7Data, P7Length, &Wrapped, &NewP7Data, &NewP7Length);
   if (!Status || (NewP7Length > INT_MAX)) {
     goto _Error;
   }
@@ -690,7 +690,7 @@ Pkcs7GetCertificatesList (
     CertBuf    = NULL;
 
     for (Index = 0; ; Index++) {
-      Status = X509PopCertificate (CertCtx.chain, &SingleCert, &CertSize);
+      Status = X509PopCertificate_openssl (CertCtx.chain, &SingleCert, &CertSize);
       if (!Status) {
         break;
       }
@@ -734,7 +734,7 @@ Pkcs7GetCertificatesList (
     CertBuf    = NULL;
 
     for (Index = 0; ; Index++) {
-      Status = X509PopCertificate (CertCtx.untrusted, &SingleCert, &CertSize);
+      Status = X509PopCertificate_openssl (CertCtx.untrusted, &SingleCert, &CertSize);
       if (!Status) {
         break;
       }
@@ -832,7 +832,7 @@ _Error:
 **/
 BOOLEAN
 EFIAPI
-Pkcs7Verify (
+Pkcs7Verify_openssl (
   IN  CONST UINT8  *P7Data,
   IN  UINTN        P7Length,
   IN  CONST UINT8  *TrustedCert,
@@ -893,7 +893,7 @@ Pkcs7Verify (
     return FALSE;
   }
 
-  Status = WrapPkcs7Data (P7Data, P7Length, &Wrapped, &SignedData, &SignedDataSize);
+  Status = WrapPkcs7Data_openssl (P7Data, P7Length, &Wrapped, &SignedData, &SignedDataSize);
   if (!Status) {
     return Status;
   }
@@ -940,7 +940,7 @@ Pkcs7Verify (
     goto _Exit;
   }
 
-  X509_STORE_set_verify_cb (CertStore, X509VerifyCb);
+  X509_STORE_set_verify_cb (CertStore, X509VerifyCb_openssl);
 
   //
   // For generic PKCS#7 handling, InData may be NULL if the content is present
@@ -1019,7 +1019,7 @@ _Exit:
 */
 BOOLEAN
 EFIAPI
-Pkcs7GetAttachedContent (
+Pkcs7GetAttachedContent_openssl (
   IN  CONST UINT8  *P7Data,
   IN  UINTN        P7Length,
   OUT VOID         **Content,
@@ -1046,7 +1046,7 @@ Pkcs7GetAttachedContent (
   SignedData = NULL;
   OctStr     = NULL;
 
-  Status = WrapPkcs7Data (P7Data, P7Length, &Wrapped, &SignedData, &SignedDataSize);
+  Status = WrapPkcs7Data_openssl (P7Data, P7Length, &Wrapped, &SignedData, &SignedDataSize);
   if (!Status || (SignedDataSize > INT_MAX)) {
     goto _Exit;
   }

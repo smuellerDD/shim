@@ -6,9 +6,13 @@
 #include <openssl/sha.h>
 #include <openssl/md5.h>
 
+#define strlen
+#include <leancrypto.h>
+
 #define TRAD_DES_HASH_SIZE 13 /* (64/6+1) + (12/6) */
 #define BSDI_DES_HASH_SIZE 20 /* (64/6+1) + (24/6) + 4 + 1 */
 #define BLOWFISH_HASH_SIZE 31 /* 184/6+1 */
+#include <Library/BaseCryptLib.h>
 
 UINT16 get_hash_size (const UINT16 method)
 {
@@ -20,11 +24,13 @@ UINT16 get_hash_size (const UINT16 method)
 	case MD5_BASED:
 		return MD5_DIGEST_LENGTH;
 	case SHA256_BASED:
-		return SHA256_DIGEST_LENGTH;
+		return LC_SHA256_SIZE_DIGEST;
 	case SHA512_BASED:
-		return SHA512_DIGEST_LENGTH;
+		return LC_SHA512_SIZE_DIGEST;
 	case BLOWFISH_BASED:
 		return BLOWFISH_HASH_SIZE;
+	default:
+		return 0;
 	}
 
 	return 0;
@@ -93,179 +99,143 @@ static EFI_STATUS md5_crypt (const char *key,  UINT32 key_len,
 	return EFI_SUCCESS;
 }
 
-static EFI_STATUS sha256_crypt (const char *key,  UINT32 key_len,
-				const char *salt, UINT32 salt_size,
-				const UINT32 rounds, UINT8 *hash)
+static EFI_STATUS hash_crypt (struct lc_hash_ctx *ctx,
+			      struct lc_hash_ctx *alt_ctx, UINT8 digestsize,
+			      const UINT8 *key,  UINT32 key_len,
+			      const UINT8 *salt, UINT32 salt_size,
+			      const UINT32 rounds, UINT8 *hash)
 {
-	SHA256_CTX ctx, alt_ctx;
-	UINT8 alt_result[SHA256_DIGEST_SIZE];
-	UINT8 tmp_result[SHA256_DIGEST_SIZE];
-	UINT8 *cp, *p_bytes, *s_bytes;
+	UINT8 alt_result[LC_SHA_MAX_SIZE_DIGEST];
+	UINT8 tmp_result[LC_SHA_MAX_SIZE_DIGEST];
+	UINT8 *cp, *p_bytes = NULL, *s_bytes = NULL;
 	UINTN cnt;
+	EFI_STATUS ret = EFI_SUCCESS;
 
-	SHA256_Init(&ctx);
-	SHA256_Update(&ctx, key, key_len);
-	SHA256_Update(&ctx, salt, salt_size);
+	lc_hash_init(ctx);
+	lc_hash_update(ctx, key, key_len);
+	lc_hash_update(ctx, salt, salt_size);
 
-	SHA256_Init(&alt_ctx);
-	SHA256_Update(&alt_ctx, key, key_len);
-	SHA256_Update(&alt_ctx, salt, salt_size);
-	SHA256_Update(&alt_ctx, key, key_len);
-	SHA256_Final(alt_result, &alt_ctx);
+	lc_hash_init(alt_ctx);
+	lc_hash_update(alt_ctx, key, key_len);
+	lc_hash_update(alt_ctx, salt, salt_size);
+	lc_hash_update(alt_ctx, key, key_len);
+	lc_hash_final(alt_ctx, alt_result);
 
-	for (cnt = key_len; cnt > 32; cnt -= 32)
-		SHA256_Update(&ctx, alt_result, 32);
-	SHA256_Update(&ctx, alt_result, cnt);
+	for (cnt = key_len; cnt > digestsize; cnt -= digestsize)
+		lc_hash_update(ctx, alt_result, digestsize);
+	lc_hash_update(ctx, alt_result, cnt);
 
 	for (cnt = key_len; cnt > 0; cnt >>= 1) {
 		if ((cnt & 1) != 0) {
-			SHA256_Update(&ctx, alt_result, 32);
+			lc_hash_update(ctx, alt_result, digestsize);
 		} else {
-			SHA256_Update(&ctx, key, key_len);
+			lc_hash_update(ctx, key, key_len);
 		}
 	}
-	SHA256_Final(alt_result, &ctx);
+	lc_hash_final(ctx, alt_result);
 
-	SHA256_Init(&alt_ctx);
+	lc_hash_init(alt_ctx);
 	for (cnt = 0; cnt < key_len; ++cnt)
-		SHA256_Update(&alt_ctx, key, key_len);
-	SHA256_Final(tmp_result, &alt_ctx);
+		lc_hash_update(alt_ctx, key, key_len);
+	lc_hash_final(alt_ctx, tmp_result);
 
 	cp = p_bytes = AllocatePool(key_len);
-	for (cnt = key_len; cnt >= 32; cnt -= 32) {
-		CopyMem(cp, tmp_result, 32);
-		cp += 32;
+	if (!p_bytes) {
+		ret = EFI_OUT_OF_RESOURCES;
+		goto out;
+	}
+
+	for (cnt = key_len; cnt >= digestsize; cnt -= digestsize) {
+		CopyMem(cp, tmp_result, digestsize);
+		cp += digestsize;
 	}
 	CopyMem(cp, tmp_result, cnt);
 
-	SHA256_Init(&alt_ctx);
+	lc_hash_init(alt_ctx);
 	for (cnt = 0; cnt < 16ul + alt_result[0]; ++cnt)
-		SHA256_Update(&alt_ctx, salt, salt_size);
-	SHA256_Final(tmp_result, &alt_ctx);
+		lc_hash_update(alt_ctx, salt, salt_size);
+	lc_hash_final(alt_ctx, tmp_result);
 
 	cp = s_bytes = AllocatePool(salt_size);
-	for (cnt = salt_size; cnt >= 32; cnt -= 32) {
-		CopyMem(cp, tmp_result, 32);
-		cp += 32;
+	if (!s_bytes) {
+		ret = EFI_OUT_OF_RESOURCES;
+		goto out;
+	}
+
+	for (cnt = salt_size; cnt >= digestsize; cnt -= digestsize) {
+		CopyMem(cp, tmp_result, digestsize);
+		cp += digestsize;
 	}
 	CopyMem(cp, tmp_result, cnt);
 
 	for (cnt = 0; cnt < rounds; ++cnt) {
-		SHA256_Init(&ctx);
+		lc_hash_init(ctx);
 
 		if ((cnt & 1) != 0)
-			SHA256_Update(&ctx, p_bytes, key_len);
+			lc_hash_update(ctx, p_bytes, key_len);
 		else
-			SHA256_Update(&ctx, alt_result, 32);
+			lc_hash_update(ctx, alt_result, digestsize);
 
 		if (cnt % 3 != 0)
-			SHA256_Update(&ctx, s_bytes, salt_size);
+			lc_hash_update(ctx, s_bytes, salt_size);
 
 		if (cnt % 7 != 0)
-			SHA256_Update(&ctx, p_bytes, key_len);
+			lc_hash_update(ctx, p_bytes, key_len);
 
 		if ((cnt & 1) != 0)
-			SHA256_Update(&ctx, alt_result, 32);
+			lc_hash_update(ctx, alt_result, digestsize);
 		else
-			SHA256_Update(&ctx, p_bytes, key_len);
+			lc_hash_update(ctx, p_bytes, key_len);
 
-		SHA256_Final(alt_result, &ctx);
+		lc_hash_final(ctx, alt_result);
 	}
 
-	CopyMem(hash, alt_result, SHA256_DIGEST_SIZE);
+	CopyMem(hash, alt_result, digestsize);
 
-	FreePool(p_bytes);
-	FreePool(s_bytes);
+out:
+	if (p_bytes)
+		FreePool(p_bytes);
+	if (s_bytes)
+		FreePool(s_bytes);
 
-	return EFI_SUCCESS;
+	lc_memset_secure(alt_result, 0, digestsize);
+	lc_memset_secure(tmp_result, 0, digestsize);
+
+	return ret;
+}
+
+static EFI_STATUS sha256_crypt (const char *key,  UINT32 key_len,
+				const char *salt, UINT32 salt_size,
+				const UINT32 rounds, UINT8 *hash)
+{
+	EFI_STATUS ret;
+	LC_SHA256_CTX_ON_STACK(ctx);
+	LC_SHA256_CTX_ON_STACK(alt_ctx);
+
+	ret = hash_crypt (ctx, alt_ctx, LC_SHA256_SIZE_DIGEST, (UINT8 *)key,
+			  key_len, (UINT8 *)salt, salt_size, rounds, hash);
+
+	lc_hash_zero(ctx);
+	lc_hash_zero(alt_ctx);
+
+	return ret;
 }
 
 static EFI_STATUS sha512_crypt (const char *key,  UINT32 key_len,
 				const char *salt, UINT32 salt_size,
 				const UINT32 rounds, UINT8 *hash)
 {
-	SHA512_CTX ctx, alt_ctx;
-	UINT8 alt_result[SHA512_DIGEST_LENGTH];
-	UINT8 tmp_result[SHA512_DIGEST_LENGTH];
-	UINT8 *cp, *p_bytes, *s_bytes;
-	UINTN cnt;
+	EFI_STATUS ret;
+	LC_SHA512_CTX_ON_STACK(ctx);
+	LC_SHA512_CTX_ON_STACK(alt_ctx);
 
-	SHA512_Init(&ctx);
-	SHA512_Update(&ctx, key, key_len);
-	SHA512_Update(&ctx, salt, salt_size);
+	ret = hash_crypt (ctx, alt_ctx, LC_SHA512_SIZE_DIGEST, (UINT8 *)key,
+			  key_len, (UINT8 *)salt, salt_size, rounds, hash);
 
-	SHA512_Init(&alt_ctx);
-	SHA512_Update(&alt_ctx, key, key_len);
-	SHA512_Update(&alt_ctx, salt, salt_size);
-	SHA512_Update(&alt_ctx, key, key_len);
+	lc_hash_zero(ctx);
+	lc_hash_zero(alt_ctx);
 
-	SHA512_Final(alt_result, &alt_ctx);
-
-	for (cnt = key_len; cnt > 64; cnt -= 64)
-		SHA512_Update(&ctx, alt_result, 64);
-	SHA512_Update(&ctx, alt_result, cnt);
-
-	for (cnt = key_len; cnt > 0; cnt >>= 1) {
-		if ((cnt & 1) != 0) {
-			SHA512_Update(&ctx, alt_result, 64);
-		} else {
-			SHA512_Update(&ctx, key, key_len);
-		}
-	}
-	SHA512_Final(alt_result, &ctx);
-
-	SHA512_Init(&alt_ctx);
-	for (cnt = 0; cnt < key_len; ++cnt)
-		SHA512_Update(&alt_ctx, key, key_len);
-	SHA512_Final(tmp_result, &alt_ctx);
-
-	cp = p_bytes = AllocatePool(key_len);
-	for (cnt = key_len; cnt >= 64; cnt -= 64) {
-		CopyMem(cp, tmp_result, 64);
-		cp += 64;
-	}
-	CopyMem(cp, tmp_result, cnt);
-
-	SHA512_Init(&alt_ctx);
-	for (cnt = 0; cnt < 16ul + alt_result[0]; ++cnt)
-		SHA512_Update(&alt_ctx, salt, salt_size);
-	SHA512_Final(tmp_result, &alt_ctx);
-
-	cp = s_bytes = AllocatePool(salt_size);
-	for (cnt = salt_size; cnt >= 64; cnt -= 64) {
-		CopyMem(cp, tmp_result, 64);
-		cp += 64;
-	}
-	CopyMem(cp, tmp_result, cnt);
-
-	for (cnt = 0; cnt < rounds; ++cnt) {
-		SHA512_Init(&ctx);
-
-		if ((cnt & 1) != 0)
-			SHA512_Update(&ctx, p_bytes, key_len);
-		else
-			SHA512_Update(&ctx, alt_result, 64);
-
-		if (cnt % 3 != 0)
-			SHA512_Update(&ctx, s_bytes, salt_size);
-
-		if (cnt % 7 != 0)
-			SHA512_Update(&ctx, p_bytes, key_len);
-
-		if ((cnt & 1) != 0)
-			SHA512_Update(&ctx, alt_result, 64);
-		else
-			SHA512_Update(&ctx, p_bytes, key_len);
-
-		SHA512_Final(alt_result, &ctx);
-	}
-
-	CopyMem(hash, alt_result, SHA512_DIGEST_LENGTH);
-
-	FreePool(p_bytes);
-	FreePool(s_bytes);
-
-	return EFI_SUCCESS;
+	return ret;
 }
 
 #define BF_RESULT_SIZE (7 + 22 + 31 + 1)

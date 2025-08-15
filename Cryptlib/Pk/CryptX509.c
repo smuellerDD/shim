@@ -32,7 +32,7 @@ WITHOUT WARRANTIES OR REPRESENTATIONS OF ANY KIND, EITHER EXPRESS OR IMPLIED.
 **/
 BOOLEAN
 EFIAPI
-X509ConstructCertificate (
+X509ConstructCertificate_openssl (
   IN   CONST UINT8  *Cert,
   IN   UINTN        CertSize,
   OUT  UINT8        **SingleX509Cert
@@ -80,7 +80,7 @@ X509ConstructCertificate (
 **/
 BOOLEAN
 EFIAPI
-X509ConstructCertificateStack (
+X509ConstructCertificateStack_openssl (
   IN OUT  UINT8  **X509Stack,
   ...  
   )
@@ -133,7 +133,7 @@ X509ConstructCertificateStack (
     // Construct X509 Object from the given DER-encoded certificate data.
     //
     X509Cert = NULL;
-    Status = X509ConstructCertificate (
+    Status = X509ConstructCertificate_openssl (
                (CONST UINT8 *) Cert,
                CertSize,
                (UINT8 **) &X509Cert
@@ -172,7 +172,7 @@ X509ConstructCertificateStack (
 **/
 VOID
 EFIAPI
-X509Free (
+X509Free_openssl (
   IN  VOID  *X509Cert
   )
 { 
@@ -235,7 +235,7 @@ X509StackFree (
 **/
 BOOLEAN
 EFIAPI
-X509GetSubjectName (
+X509GetSubjectName_openssl (
   IN      CONST UINT8  *Cert,
   IN      UINTN        CertSize,
   OUT     UINT8        *CertSubject,
@@ -259,7 +259,7 @@ X509GetSubjectName (
   //
   // Read DER-encoded X509 Certificate and Construct X509 object.
   //
-  Status = X509ConstructCertificate (Cert, CertSize, (UINT8 **) &X509Cert);
+  Status = X509ConstructCertificate_openssl (Cert, CertSize, (UINT8 **) &X509Cert);
   if ((X509Cert == NULL) || (!Status)) {
     Status = FALSE;
     goto _Exit;
@@ -338,7 +338,7 @@ RsaGetPublicKeyFromX509 (
   //
   // Read DER-encoded X509 Certificate and Construct X509 object.
   //
-  Status = X509ConstructCertificate (Cert, CertSize, (UINT8 **) &X509Cert);
+  Status = X509ConstructCertificate_openssl (Cert, CertSize, (UINT8 **) &X509Cert);
   if ((X509Cert == NULL) || (!Status)) {
     Status = FALSE;
     goto _Exit;
@@ -394,7 +394,7 @@ _Exit:
 **/
 BOOLEAN
 EFIAPI
-X509VerifyCert (
+X509VerifyCert_openssl (
   IN  CONST UINT8  *Cert,
   IN  UINTN        CertSize,
   IN  CONST UINT8  *CACert,
@@ -435,7 +435,7 @@ X509VerifyCert (
   //
   // Read DER-encoded certificate to be verified and Construct X509 object.
   //
-  Status = X509ConstructCertificate (Cert, CertSize, (UINT8 **) &X509Cert);
+  Status = X509ConstructCertificate_openssl (Cert, CertSize, (UINT8 **) &X509Cert);
   if ((X509Cert == NULL) || (!Status)) {
     Status = FALSE;
     goto _Exit;
@@ -444,7 +444,7 @@ X509VerifyCert (
   //
   // Read DER-encoded root certificate and Construct X509 object.
   //
-  Status = X509ConstructCertificate (CACert, CACertSize, (UINT8 **) &X509CACert);
+  Status = X509ConstructCertificate_openssl (CACert, CACertSize, (UINT8 **) &X509CACert);
   if ((X509CACert == NULL) || (!Status)) {
     Status = FALSE;
     goto _Exit;
@@ -520,7 +520,7 @@ _Exit:
 **/
 BOOLEAN
 EFIAPI
-X509GetTBSCert (
+X509GetTBSCert_openssl (
   IN  CONST UINT8  *Cert,
   IN  UINTN        CertSize,
   OUT UINT8        **TBSCert,

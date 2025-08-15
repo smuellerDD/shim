@@ -7,6 +7,9 @@
 #include <openssl/asn1.h>
 #include <openssl/bn.h>
 
+#define strlen
+#include <leancrypto.h>
+
 #define PASSWORD_MAX 256
 #define PASSWORD_MIN 1
 #define SB_PASSWORD_LEN 16
@@ -50,41 +53,11 @@ typedef struct {
 	INT32 Timeout;
 } __attribute__ ((packed)) MokTimeoutvar;
 
-static EFI_STATUS get_sha1sum(void *Data, int DataSize, UINT8 * hash)
+static EFI_STATUS get_sha256sum(void *Data, int DataSize, UINT8 * hash)
 {
-	EFI_STATUS efi_status;
-	unsigned int ctxsize;
-	void *ctx = NULL;
-
-	ctxsize = Sha1GetContextSize();
-	ctx = AllocatePool(ctxsize);
-
-	if (!ctx) {
-		console_notify(L"Unable to allocate memory for hash context");
-		return EFI_OUT_OF_RESOURCES;
-	}
-
-	if (!Sha1Init(ctx)) {
-		console_notify(L"Unable to initialise hash");
-		efi_status = EFI_OUT_OF_RESOURCES;
-		goto done;
-	}
-
-	if (!(Sha1Update(ctx, Data, DataSize))) {
-		console_notify(L"Unable to generate hash");
-		efi_status = EFI_OUT_OF_RESOURCES;
-		goto done;
-	}
-
-	if (!(Sha1Final(ctx, hash))) {
-		console_notify(L"Unable to finalise hash");
-		efi_status = EFI_OUT_OF_RESOURCES;
-		goto done;
-	}
-
-	efi_status = EFI_SUCCESS;
-done:
-	return efi_status;
+	if (!Sha256HashAll (Data, DataSize, hash))
+		return EFI_UNSUPPORTED;
+	return EFI_SUCCESS;
 }
 
 static BOOLEAN is_sha2_hash(EFI_GUID Type)
@@ -108,11 +81,11 @@ static UINT32 sha_size(EFI_GUID Type)
 	else if (CompareGuid(&Type, &EFI_CERT_SHA224_GUID) == 0)
 		return SHA224_DIGEST_LENGTH;
 	else if (CompareGuid(&Type, &EFI_CERT_SHA256_GUID) == 0)
-		return SHA256_DIGEST_SIZE;
+		return LC_SHA256_SIZE_DIGEST;
 	else if (CompareGuid(&Type, &EFI_CERT_SHA384_GUID) == 0)
-		return SHA384_DIGEST_LENGTH;
+		return LC_SHA384_SIZE_DIGEST;
 	else if (CompareGuid(&Type, &EFI_CERT_SHA512_GUID) == 0)
-		return SHA512_DIGEST_LENGTH;
+		return LC_SHA512_SIZE_DIGEST;
 
 	return 0;
 }
@@ -232,6 +205,332 @@ static MokListNode *build_mok_list(UINT32 num, void *Data, UINTN DataSize)
 	return list;
 }
 
+static void print_name_lc(CHAR16 *name, UINTN *name_avail_len,
+			  const char *keyword, UINTN keyword_len,
+			  const char *str, UINTN str_len, int first)
+{
+	CHAR16 part[NAME_LINE_MAX + 1];
+	UINTN data_to_add = keyword_len + str_len + 1;
+
+	if (!first)
+		data_to_add += 2;
+
+	if (data_to_add > *name_avail_len)
+		return;
+
+	if (first) {
+		SPrint(part, NAME_LINE_MAX * sizeof(CHAR16), L"%s=%a", keyword,
+		       str);
+	} else {
+		SPrint(part, NAME_LINE_MAX * sizeof(CHAR16), L", %s=%a",
+		       keyword, str);
+	}
+
+	StrCat(name, part);
+
+	*name_avail_len -= str_len;
+}
+
+static CHAR16 *get_x509_name_issuer_lc(const struct lc_x509_certificate *cert)
+{
+	CHAR16 name[NAME_LINE_MAX + 1];
+	UINTN name_avail_len = NAME_LINE_MAX;
+	const char *str;
+	size_t str_len;
+	int first = 1;
+
+	name[0] = '\0';
+
+	if (!lc_x509_cert_get_issuer_cn(cert, &str, &str_len)) {
+		print_name_lc(name, &name_avail_len, "CN", 2, str, str_len,
+			      first);
+		first = 0;
+	}
+
+	if (!lc_x509_cert_get_issuer_o(cert, &str, &str_len)) {
+		print_name_lc(name, &name_avail_len, "OU", 2, str, str_len,
+			      first);
+		first = 0;
+	}
+
+	if (!lc_x509_cert_get_issuer_o(cert, &str, &str_len)) {
+		print_name_lc(name, &name_avail_len, "O", 1, str, str_len,
+			      first);
+		first = 0;
+	}
+
+	if (!lc_x509_cert_get_issuer_c(cert, &str, &str_len)) {
+		print_name_lc(name, &name_avail_len, "C", 1, str, str_len,
+			      first);
+		first = 0;
+	}
+
+	if (!lc_x509_cert_get_issuer_st(cert, &str, &str_len)) {
+		print_name_lc(name, &name_avail_len, "ST", 2, str, str_len,
+			      first);
+		first = 0;
+	}
+
+	if (name_avail_len < NAME_LINE_MAX)
+		return PoolPrint(L"%s", name);
+
+	return NULL;
+}
+
+static CHAR16 *get_x509_name_subject_lc(const struct lc_x509_certificate *cert)
+{
+	CHAR16 name[NAME_LINE_MAX + 1];
+	UINTN name_avail_len = NAME_LINE_MAX;
+	const char *str;
+	size_t str_len;
+	int first = 1;
+
+	name[0] = '\0';
+
+	if (!lc_x509_cert_get_subject_cn(cert, &str, &str_len)) {
+		print_name_lc(name, &name_avail_len, "CN", 2, str, str_len,
+			      first);
+		first = 0;
+	}
+
+	if (!lc_x509_cert_get_subject_o(cert, &str, &str_len)) {
+		print_name_lc(name, &name_avail_len, "OU", 2, str, str_len,
+			      first);
+		first = 0;
+	}
+
+	if (!lc_x509_cert_get_subject_o(cert, &str, &str_len)) {
+		print_name_lc(name, &name_avail_len, "O", 1, str, str_len,
+			      first);
+		first = 0;
+	}
+
+	if (!lc_x509_cert_get_subject_c(cert, &str, &str_len)) {
+		print_name_lc(name, &name_avail_len, "C", 1, str, str_len,
+			      first);
+		first = 0;
+	}
+
+	if (!lc_x509_cert_get_subject_st(cert, &str, &str_len)) {
+		print_name_lc(name, &name_avail_len, "ST", 2, str, str_len,
+			      first);
+		first = 0;
+	}
+
+	if (name_avail_len < NAME_LINE_MAX)
+		return PoolPrint(L"%s", name);
+
+	return NULL;
+}
+
+static inline void le32_to_ptr(uint8_t *p, const uint32_t value)
+{
+	p[0] = (uint8_t)(value);
+	p[1] = (uint8_t)(value >> 8);
+	p[2] = (uint8_t)(value >> 16);
+	p[3] = (uint8_t)(value >> 24);
+}
+
+static inline void le64_to_ptr(uint8_t *p, const uint64_t value)
+{
+	le32_to_ptr(p + 4, (uint32_t)(value >> 32));
+	le32_to_ptr(p, (uint32_t)(value));
+}
+
+static char hex_char(unsigned int bin, const int u)
+{
+	if (bin < 10)
+		return (char)(bin + 0x30);
+	else if (bin < 16)
+		return (char)(bin + 0x57 - (unsigned int)(!!u * 0x20));
+
+	return 0x78;
+}
+
+void bin2hex(const uint8_t *bin, const size_t binlen, char *hex,
+	     const size_t hexlen, const int u)
+{
+	size_t i = 0;
+	size_t chars = (binlen > (hexlen / 2)) ? (hexlen / 2) : binlen;
+
+	for (i = 0; i < chars; i++) {
+		hex[(i * 2)] = hex_char((bin[i] >> 4), u);
+		hex[((i * 2) + 1)] = hex_char((bin[i] & 0x0f), u);
+	}
+}
+
+static CHAR16 *get_x509_time_valid_from_lc(
+	const struct lc_x509_certificate *cert)
+{
+	time64_t time_since_epoch;
+	char str[30];
+
+	if (lc_x509_cert_get_valid_from(cert, &time_since_epoch))
+		return NULL;
+
+	//TODO make it a nice time
+	/*
+	* BIO_printf(bp, "%s %2d %02d:%02d:%02d %d%s",
+	mon[M - 1], d, h, m, s, y + 1900,
+	(gmt) ? " GMT" : ""
+	*/
+	bin2hex((uint8_t *)&time_since_epoch, sizeof(time_since_epoch), str,
+		sizeof(str) - 1, 0);
+	str[sizeof(time_since_epoch) * 2 + 1] = '\0';
+
+	return PoolPrint(L"%a", str);
+}
+
+static CHAR16 *get_x509_time_valid_to_lc(const struct lc_x509_certificate *cert)
+{
+	time64_t time_since_epoch;
+	char str[30];
+
+	if (lc_x509_cert_get_valid_to(cert, &time_since_epoch))
+		return NULL;
+
+	//TODO make it a nice time
+	/*
+	* BIO_printf(bp, "%s %2d %02d:%02d:%02d %d%s",
+	mon[M - 1], d, h, m, s, y + 1900,
+	(gmt) ? " GMT" : ""
+	*/
+	bin2hex((uint8_t *)&time_since_epoch, sizeof(time_since_epoch), str,
+		sizeof(str) - 1, 0);
+	str[sizeof(time_since_epoch) * 2 + 1] = '\0';
+
+	return PoolPrint(L"%a", str);
+}
+
+static void show_x509_info_lc(const struct lc_x509_certificate *cert,
+			      UINT8 *hash, UINTN hashsize)
+{
+	CHAR16 *issuer = NULL;
+	CHAR16 *subject = NULL;
+	CHAR16 *from = NULL;
+	CHAR16 *until = NULL;
+	const char **eku_names;
+	unsigned int num_eku = 0;
+	POOL_PRINT hash_string1;
+	POOL_PRINT hash_string2;
+	POOL_PRINT serial_string;
+	const uint8_t *serial;
+	UINTN serial_len;
+	int fields = 0;
+	CHAR16 **text;
+	UINTN i = 0;
+
+	ZeroMem(&hash_string1, sizeof(hash_string1));
+	ZeroMem(&hash_string2, sizeof(hash_string2));
+	ZeroMem(&serial_string, sizeof(serial_string));
+
+	if (!lc_x509_cert_get_serial(cert, &serial, &serial_len)) {
+		char str[30];
+
+		bin2hex(serial, serial_len, str, sizeof(str), 0);
+		for (i = 0;
+		     i < (serial_len * 2 < sizeof(str) ? serial_len * 2 :
+							 sizeof(str));
+		     i++) {
+			CatPrint(&serial_string, L"%02x:", str[i]);
+		}
+		fields++;
+	}
+
+	issuer = get_x509_name_issuer_lc(cert);
+	if (issuer)
+		fields++;
+
+	subject = get_x509_name_subject_lc(cert);
+	if (subject)
+		fields++;
+
+	from = get_x509_time_valid_from_lc(cert);
+	if (from)
+		fields++;
+
+	until = get_x509_time_valid_to_lc(cert);
+	if (until)
+		fields++;
+
+	for (i = 0; i < hashsize / 2; i++)
+		CatPrint(&hash_string1, L"%02x ", hash[i]);
+	for ( ; i < hashsize; i++)
+		CatPrint(&hash_string2, L"%02x ", hash[i]);
+
+	if (hash_string1.str)
+		fields++;
+
+	if (hash_string2.str)
+		fields++;
+
+	if (!fields)
+		return;
+
+	i = 0;
+
+	if (lc_x509_cert_get_eku(cert, &eku_names, &num_eku))
+		num_eku = 0;
+	text = AllocateZeroPool(sizeof(CHAR16 *) *
+				(fields * 3 + num_eku + 3));
+	if (num_eku) {
+		unsigned int j;
+
+		text[i++] = StrDuplicate(L"[Extended Key Usage]");
+
+		for (j = 0; j < num_eku; j++) {
+			POOL_PRINT extkeyusage;
+
+			CatPrint(&extkeyusage, L"OID: %a", eku_names[j]);
+			text[i++] = StrDuplicate(extkeyusage.str);
+			FreePool(extkeyusage.str);
+		}
+		text[i++] = StrDuplicate(L"");
+	}
+
+	if (serial_string.str) {
+		text[i++] = StrDuplicate(L"[Serial Number]");
+		text[i++] = serial_string.str;
+		text[i++] = StrDuplicate(L"");
+	}
+	if (issuer) {
+		text[i++] = StrDuplicate(L"[Issuer]");
+		text[i++] = issuer;
+		text[i++] = StrDuplicate(L"");
+	}
+	if (subject) {
+		text[i++] = StrDuplicate(L"[Subject]");
+		text[i++] = subject;
+		text[i++] = StrDuplicate(L"");
+	}
+	if (from) {
+		text[i++] = StrDuplicate(L"[Valid Not Before]");
+		text[i++] = from;
+		text[i++] = StrDuplicate(L"");
+	}
+	if (until) {
+		text[i++] = StrDuplicate(L"[Valid Not After]");
+		text[i++] = until;
+		text[i++] = StrDuplicate(L"");
+	}
+	if (hash_string1.str) {
+		text[i++] = StrDuplicate(L"[Fingerprint]");
+		text[i++] = hash_string1.str;
+	}
+	if (hash_string2.str) {
+		text[i++] = hash_string2.str;
+		text[i++] = StrDuplicate(L"");
+	}
+	text[i] = NULL;
+
+	console_print_box(text, -1);
+
+	for (i = 0; text[i] != NULL; i++)
+		FreePool(text[i]);
+
+	FreePool(text);
+}
+
 typedef struct {
 	int nid;
 	CHAR16 *name;
@@ -246,7 +545,7 @@ static NidName nidname[] = {
 	{-1, NULL}
 };
 
-static CHAR16 *get_x509_name(X509_NAME * X509Name)
+static CHAR16 *get_x509_name_openssl(X509_NAME * X509Name)
 {
 	CHAR16 name[NAME_LINE_MAX + 1];
 	CHAR16 part[NAME_LINE_MAX + 1];
@@ -289,7 +588,7 @@ static CHAR16 *get_x509_name(X509_NAME * X509Name)
 	return NULL;
 }
 
-static CHAR16 *get_x509_time(ASN1_TIME * time)
+static CHAR16 *get_x509_time_openssl(ASN1_TIME * time)
 {
 	BIO *bio = BIO_new(BIO_s_mem());
 	char str[30];
@@ -305,7 +604,8 @@ static CHAR16 *get_x509_time(ASN1_TIME * time)
 	return PoolPrint(L"%a", str);
 }
 
-static void show_x509_info(X509 * X509Cert, UINT8 * hash)
+static void show_x509_info_openssl(X509 * X509Cert, UINT8 * hash,
+				   UINTN hashsize)
 {
 	ASN1_INTEGER *serial;
 	BIGNUM *bnser;
@@ -322,7 +622,7 @@ static void show_x509_info(X509 * X509Cert, UINT8 * hash)
 	POOL_PRINT serial_string;
 	int fields = 0;
 	CHAR16 **text;
-	int i = 0;
+	UINTN i = 0;
 
 	ZeroMem(&hash_string1, sizeof(hash_string1));
 	ZeroMem(&hash_string2, sizeof(hash_string2));
@@ -344,35 +644,35 @@ static void show_x509_info(X509 * X509Cert, UINT8 * hash)
 
 	X509Name = X509_get_issuer_name(X509Cert);
 	if (X509Name) {
-		issuer = get_x509_name(X509Name);
+		issuer = get_x509_name_openssl(X509Name);
 		if (issuer)
 			fields++;
 	}
 
 	X509Name = X509_get_subject_name(X509Cert);
 	if (X509Name) {
-		subject = get_x509_name(X509Name);
+		subject = get_x509_name_openssl(X509Name);
 		if (subject)
 			fields++;
 	}
 
 	time = X509_get_notBefore(X509Cert);
 	if (time) {
-		from = get_x509_time(time);
+		from = get_x509_time_openssl(time);
 		if (from)
 			fields++;
 	}
 
 	time = X509_get_notAfter(X509Cert);
 	if (time) {
-		until = get_x509_time(time);
+		until = get_x509_time_openssl(time);
 		if (until)
 			fields++;
 	}
 
-	for (i = 0; i < 10; i++)
+	for (i = 0; i < hashsize / 2; i++)
 		CatPrint(&hash_string1, L"%02x ", hash[i]);
-	for (i = 10; i < 20; i++)
+	for ( ; i < hashsize; i++)
 		CatPrint(&hash_string2, L"%02x ", hash[i]);
 
 	if (hash_string1.str)
@@ -460,8 +760,7 @@ static void show_sha_digest(EFI_GUID Type, UINT8 * hash)
 	CHAR16 *text[5];
 	POOL_PRINT hash_string1;
 	POOL_PRINT hash_string2;
-	int i;
-	int length;
+	unsigned int i, length;
 
 	if (CompareGuid(&Type, &EFI_CERT_SHA1_GUID) == 0) {
 		length = SHA1_DIGEST_SIZE;
@@ -470,13 +769,13 @@ static void show_sha_digest(EFI_GUID Type, UINT8 * hash)
 		length = SHA224_DIGEST_LENGTH;
 		text[0] = L"SHA224 hash";
 	} else if (CompareGuid(&Type, &EFI_CERT_SHA256_GUID) == 0) {
-		length = SHA256_DIGEST_SIZE;
+		length = LC_SHA256_SIZE_DIGEST;
 		text[0] = L"SHA256 hash";
 	} else if (CompareGuid(&Type, &EFI_CERT_SHA384_GUID) == 0) {
-		length = SHA384_DIGEST_LENGTH;
+		length = LC_SHA384_SIZE_DIGEST;
 		text[0] = L"SHA384 hash";
 	} else if (CompareGuid(&Type, &EFI_CERT_SHA512_GUID) == 0) {
-		length = SHA512_DIGEST_LENGTH;
+		length = LC_SHA512_SIZE_DIGEST;
 		text[0] = L"SHA512 hash";
 	} else {
 		return;
@@ -565,20 +864,25 @@ static void show_mok_info(EFI_GUID Type, void *Mok, UINTN MokSize)
 		return;
 
 	if (CompareGuid (&Type, &X509_GUID) == 0) {
-		UINT8 hash[SHA1_DIGEST_SIZE];
+		UINT8 hash[LC_SHA256_SIZE_DIGEST];
+		struct lc_x509_certificate *cert;
 		X509 *X509Cert;
 
-		efi_status = get_sha1sum(Mok, MokSize, hash);
+		efi_status = get_sha256sum(Mok, MokSize, hash);
 		if (EFI_ERROR(efi_status)) {
 			console_notify(L"Failed to compute MOK fingerprint");
 			return;
 		}
 
-		if (X509ConstructCertificate(Mok, MokSize,
-					     (UINT8 **) & X509Cert)
-		    && X509Cert != NULL) {
-			show_x509_info(X509Cert, hash);
-			X509_free(X509Cert);
+		if (X509ConstructCertificate(Mok, MokSize, (UINT8 **) &cert) &&
+		    cert != NULL) {
+			show_x509_info_lc(cert, hash, sizeof(hash));
+			X509Free(cert);
+		} else if (X509ConstructCertificate_openssl(
+				Mok, MokSize, (UINT8 **) &X509Cert) &&
+			   X509Cert != NULL) {
+			show_x509_info_openssl(X509Cert, hash, sizeof(hash));
+			X509Free_openssl(X509Cert);
 		} else {
 			console_notify(L"Not a valid X509 certificate");
 			return;
@@ -733,6 +1037,7 @@ static EFI_STATUS compute_pw_hash(void *Data, UINTN DataSize, UINT8 * password,
 	}
 
 	efi_status = EFI_SUCCESS;
+
 done:
 	return efi_status;
 }
@@ -796,7 +1101,7 @@ static EFI_STATUS match_password(PASSWORD_CRYPT * pw_crypt,
 			return EFI_INVALID_PARAMETER;
 	} else if (auth) {
 		auth_hash = auth;
-		auth_size = SHA256_DIGEST_SIZE;
+		auth_size = LC_SHA256_SIZE_DIGEST;
 	} else {
 		return EFI_INVALID_PARAMETER;
 	}
@@ -826,9 +1131,9 @@ static EFI_STATUS match_password(PASSWORD_CRYPT * pw_crypt,
 			 * For backward compatibility
 			 */
 			efi_status = compute_pw_hash(Data, DataSize,
-						(UINT8 *) password,
-						pw_length * sizeof(CHAR16),
-						hash);
+						     (UINT8 *) password,
+						     pw_length * sizeof(CHAR16),
+						     hash);
 		}
 		if (EFI_ERROR(efi_status)) {
 			console_errorbox(L"Unable to generate password hash");
@@ -925,7 +1230,7 @@ static EFI_STATUS store_keys(void *MokNew, UINTN MokNewSize, int authenticate,
 		efi_status = RT->GetVariable(auth_name, &SHIM_LOCK_GUID,
 					     &attributes, &auth_size, auth);
 		if (EFI_ERROR(efi_status) ||
-		    (auth_size != SHA256_DIGEST_SIZE &&
+		    (auth_size != LC_SHA256_SIZE_DIGEST &&
 		     auth_size != PASSWORD_CRYPT_SIZE)) {
 			if (MokX)
 				console_error(L"Failed to get MokXAuth",
@@ -1269,7 +1574,7 @@ static EFI_STATUS delete_keys(void *MokDel, UINTN MokDelSize, BOOLEAN MokX)
 	efi_status = RT->GetVariable(auth_name, &SHIM_LOCK_GUID, &attributes,
 				     &auth_size, auth);
 	if (EFI_ERROR(efi_status) ||
-	    (auth_size != SHA256_DIGEST_SIZE
+	    (auth_size != LC_SHA256_SIZE_DIGEST
 	     && auth_size != PASSWORD_CRYPT_SIZE)) {
 		if (MokX)
 			console_error(L"Failed to get MokXDelAuth", efi_status);
@@ -1803,7 +2108,7 @@ static EFI_STATUS mok_pw_prompt(void *MokPW, UINTN MokPWSize)
 	CHAR16 *clear_p[] = { L"Clear MOK password?", NULL };
 	CHAR16 *set_p[] = { L"Set MOK password?", NULL };
 
-	if (MokPWSize != SHA256_DIGEST_SIZE && MokPWSize != PASSWORD_CRYPT_SIZE) {
+	if (MokPWSize != LC_SHA256_SIZE_DIGEST && MokPWSize != PASSWORD_CRYPT_SIZE) {
 		console_notify(L"Invalid MokPW variable contents");
 		return EFI_INVALID_PARAMETER;
 	}
@@ -1816,7 +2121,7 @@ static EFI_STATUS mok_pw_prompt(void *MokPW, UINTN MokPWSize)
 		if (CompareMem(MokPW, hash, PASSWORD_CRYPT_SIZE) == 0)
 			clear = 1;
 	} else {
-		if (CompareMem(MokPW, hash, SHA256_DIGEST_SIZE) == 0)
+		if (CompareMem(MokPW, hash, LC_SHA256_SIZE_DIGEST) == 0)
 			clear = 1;
 	}
 
@@ -1863,7 +2168,7 @@ mokpw_done:
 
 static BOOLEAN verify_certificate(UINT8 * cert, UINTN size)
 {
-	X509 *X509Cert;
+	struct lc_x509_certificate *parsed_cert;
 	UINTN length;
 	if (!cert || size < 4)
 		return FALSE;
@@ -1886,13 +2191,13 @@ static BOOLEAN verify_certificate(UINT8 * cert, UINTN size)
 		return FALSE;
 	}
 
-	if (!(X509ConstructCertificate(cert, size, (UINT8 **) & X509Cert)) ||
-	    X509Cert == NULL) {
+	if (!(X509ConstructCertificate(cert, size, (UINT8 **) &parsed_cert)) ||
+	    parsed_cert == NULL) {
 		console_notify(L"Invalid X509 certificate");
 		return FALSE;
 	}
 
-	X509_free(X509Cert);
+	X509Free(parsed_cert);
 	return TRUE;
 }
 
@@ -1905,8 +2210,7 @@ static EFI_STATUS enroll_file(void *data, UINTN datasize, BOOLEAN hash)
 	void *mokbuffer = NULL;
 
 	if (hash) {
-		UINT8 sha256[SHA256_DIGEST_SIZE];
-		UINT8 sha1[SHA1_DIGEST_SIZE];
+		UINT8 sha256[LC_SHA256_SIZE_DIGEST];
 		SHIM_LOCK *shim_lock;
 		PE_COFF_LOADER_IMAGE_CONTEXT context;
 
@@ -1916,7 +2220,7 @@ static EFI_STATUS enroll_file(void *data, UINTN datasize, BOOLEAN hash)
 			goto out;
 
 		mokbuffersize = sizeof(EFI_SIGNATURE_LIST) + sizeof(EFI_GUID) +
-		    SHA256_DIGEST_SIZE;
+		    LC_SHA256_SIZE_DIGEST;
 
 		mokbuffer = AllocatePool(mokbuffersize);
 		if (!mokbuffer)
@@ -1927,16 +2231,16 @@ static EFI_STATUS enroll_file(void *data, UINTN datasize, BOOLEAN hash)
 			goto out;
 
 		efi_status = shim_lock->Hash(data, datasize, &context, sha256,
-					     sha1);
+					     NULL);
 		if (EFI_ERROR(efi_status))
 			goto out;
 
 		CertList = mokbuffer;
 		CertList->SignatureType = EFI_CERT_SHA256_GUID;
-		CertList->SignatureSize = 16 + SHA256_DIGEST_SIZE;
+		CertList->SignatureSize = 16 + LC_SHA256_SIZE_DIGEST;
 		CertData = (EFI_SIGNATURE_DATA *) (((UINT8 *) mokbuffer) +
 						   sizeof(EFI_SIGNATURE_LIST));
-		CopyMem(CertData->SignatureData, sha256, SHA256_DIGEST_SIZE);
+		CopyMem(CertData->SignatureData, sha256, LC_SHA256_SIZE_DIGEST);
 	} else {
 		mokbuffersize = datasize + sizeof(EFI_SIGNATURE_LIST) +
 		    sizeof(EFI_GUID);
@@ -2119,7 +2423,7 @@ static BOOLEAN verify_pw(BOOLEAN * protected)
 	 * purely because of a failure to read the variable
 	 */
 	if (EFI_ERROR(efi_status) ||
-	    (size != SHA256_DIGEST_SIZE && size != PASSWORD_CRYPT_SIZE))
+	    (size != LC_SHA256_SIZE_DIGEST && size != PASSWORD_CRYPT_SIZE))
 		return TRUE;
 
 	if (attributes & EFI_VARIABLE_RUNTIME_ACCESS)
@@ -2244,28 +2548,28 @@ static EFI_STATUS enter_mok_menu(EFI_HANDLE image_handle UNUSED,
 		efi_status = RT->GetVariable(L"MokAuth", &SHIM_LOCK_GUID,
 					     &attributes, &auth_size, auth);
 		if (!EFI_ERROR(efi_status) &&
-		    (auth_size == SHA256_DIGEST_SIZE ||
+		    (auth_size == LC_SHA256_SIZE_DIGEST ||
 		     auth_size == PASSWORD_CRYPT_SIZE))
 			MokAuth = 1;
 
 		efi_status = RT->GetVariable(L"MokDelAuth", &SHIM_LOCK_GUID,
 					     &attributes, &auth_size, auth);
 		if (!EFI_ERROR(efi_status) &&
-		    (auth_size == SHA256_DIGEST_SIZE ||
+		    (auth_size == LC_SHA256_SIZE_DIGEST ||
 		     auth_size == PASSWORD_CRYPT_SIZE))
 			MokDelAuth = 1;
 
 		efi_status = RT->GetVariable(L"MokXAuth", &SHIM_LOCK_GUID,
 					     &attributes, &auth_size, auth);
 		if (!EFI_ERROR(efi_status) &&
-		    (auth_size == SHA256_DIGEST_SIZE ||
+		    (auth_size == LC_SHA256_SIZE_DIGEST ||
 		     auth_size == PASSWORD_CRYPT_SIZE))
 			MokXAuth = 1;
 
 		efi_status = RT->GetVariable(L"MokXDelAuth", &SHIM_LOCK_GUID,
 					     &attributes, &auth_size, auth);
 		if (!EFI_ERROR(efi_status) &&
-		    (auth_size == SHA256_DIGEST_SIZE ||
+		    (auth_size == LC_SHA256_SIZE_DIGEST ||
 		     auth_size == PASSWORD_CRYPT_SIZE))
 			MokXDelAuth = 1;
 
@@ -2673,6 +2977,10 @@ EFI_STATUS efi_main(EFI_HANDLE image_handle, EFI_SYSTEM_TABLE * systab)
 
 	InitializeLib(image_handle, systab);
 
+	dprint(L"attempting to initialize leancrypto\n");
+	if (lc_init(0))
+		return FALSE;
+
 	setup_verbosity();
 	setup_rand();
 
@@ -2683,3 +2991,15 @@ EFI_STATUS efi_main(EFI_HANDLE image_handle, EFI_SYSTEM_TABLE * systab)
 	console_fini();
 	return efi_status;
 }
+
+#ifdef __aarch64__
+/*
+ * Provide "fake" implementation to compile code on AARCH64, see
+ * https://gcc.gnu.org/bugzilla/show_bug.cgi?id=91833
+ */
+unsigned long int __getauxval (unsigned long int __unused)
+{
+	(void)__unused;
+	return 0;
+}
+#endif

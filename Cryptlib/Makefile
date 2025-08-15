@@ -9,7 +9,9 @@ FEATUREFLAGS	+= -nostdinc
 INCLUDES	= -I$(CRYPTDIR) -I$(CRYPTDIR)/Include \
 		  $(EFI_INCLUDES) \
 		  -isystem $(TOPDIR)/include/system \
-		  -isystem $(shell $(CC) -print-file-name=include)
+		  -isystem $(shell $(CC) -print-file-name=include) \
+		  -I/usr/local/include -DLC_EFI_ENVIRONMENT \
+		  -I$(TOPDIR)/include
 
 WARNFLAGS	+= -Wno-unused-parameter \
 		   -Wno-unused-but-set-variable
@@ -50,15 +52,15 @@ TARGET		= libcryptlib.a
 OBJS		=   Hash/CryptMd4Null.o \
 		    Hash/CryptMd5.o \
 		    Hash/CryptSha1.o \
-		    Hash/CryptSha256.o \
-		    Hash/CryptSha512.o \
+		    Hash/CryptSha256_leancrypto.o \
+		    Hash/CryptSha512_leancrypto.o \
 		    Hmac/CryptHmacMd5Null.o \
 		    Hmac/CryptHmacSha1Null.o \
 		    Hmac/CryptHmacSha256Null.o \
 		    Cipher/CryptAesNull.o \
 		    Cipher/CryptTdesNull.o \
 		    Cipher/CryptArc4Null.o \
-		    Rand/CryptRand.o \
+		    Rand/CryptRand_leancrypto.o \
 		    Pk/CryptRsaBasic.o \
 		    Pk/CryptRsaExtNull.o \
 		    Pk/CryptPkcs7SignNull.o \
@@ -66,7 +68,9 @@ OBJS		=   Hash/CryptMd4Null.o \
 		    Pk/CryptDhNull.o \
 		    Pk/CryptTs.o \
 		    Pk/CryptX509.o \
+		    Pk/CryptX509_leancrypto.o \
 		    Pk/CryptAuthenticode.o \
+		    Pk/CryptAuthenticode_leancrypto.o \
 		    Pem/CryptPemNull.o \
 		    SysCall/CrtWrapper.o \
 		    SysCall/TimerWrapper.o \

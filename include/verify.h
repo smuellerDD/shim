@@ -11,9 +11,8 @@
 #pragma once
 
 EFI_STATUS
-verify_buffer (char *data, int datasize,
+verify_buffer (UINT8 *data, UINT32 datasize, UINT8 *sha256hash,
 	       PE_COFF_LOADER_IMAGE_CONTEXT *context,
-	       UINT8 *sha256hash, UINT8 *sha1hash,
 	       bool parent_verified);
 
 void
@@ -28,10 +27,10 @@ init_openssl(void);
  * with a trusted key.
  */
 EFI_STATUS
-shim_verify(void *buffer, UINT32 size);
+shim_verify(UINT8 *buffer, UINT32 size);
 
 EFI_STATUS
-shim_hash(char *data, int datasize, PE_COFF_LOADER_IMAGE_CONTEXT *context,
+shim_hash(UINT8 *data, int datasize, PE_COFF_LOADER_IMAGE_CONTEXT *context,
           UINT8 *sha256hash, UINT8 *sha1hash);
 
 EFI_STATUS
