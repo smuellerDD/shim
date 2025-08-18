@@ -65,6 +65,11 @@ The following options can be added if composite ML-DSA shall not be supported
  -Ddilithium_ed25519=disabled -Ddilithium_ed448=disabled
 ```
 
+Note: The mentioned options must be set during the invocation of `meson setup`
+because some options create header files which must not be present if an option
+is deselected. Thus, if you disable the mentioned options with `meson configure`
+the initially created header files are not removed and compilation breaks.
+
 After the configuration step, the following command builds the leancrypto
 static library: `meson compile -C build-shim`. Note, as the EFI target is built,
 no test scripts are built during the compile process as they would not be able
