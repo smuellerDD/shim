@@ -323,20 +323,6 @@ static CHAR16 *get_x509_name_subject_lc(const struct lc_x509_certificate *cert)
 	return NULL;
 }
 
-static inline void le32_to_ptr(uint8_t *p, const uint32_t value)
-{
-	p[0] = (uint8_t)(value);
-	p[1] = (uint8_t)(value >> 8);
-	p[2] = (uint8_t)(value >> 16);
-	p[3] = (uint8_t)(value >> 24);
-}
-
-static inline void le64_to_ptr(uint8_t *p, const uint64_t value)
-{
-	le32_to_ptr(p + 4, (uint32_t)(value >> 32));
-	le32_to_ptr(p, (uint32_t)(value));
-}
-
 static char hex_char(unsigned int bin, const int u)
 {
 	if (bin < 10)
@@ -362,44 +348,34 @@ void bin2hex(const uint8_t *bin, const size_t binlen, char *hex,
 static CHAR16 *get_x509_time_valid_from_lc(
 	const struct lc_x509_certificate *cert)
 {
+	struct lc_tm time_detail;
 	time64_t time_since_epoch;
-	char str[30];
 
 	if (lc_x509_cert_get_valid_from(cert, &time_since_epoch))
 		return NULL;
 
-	//TODO make it a nice time
-	/*
-	* BIO_printf(bp, "%s %2d %02d:%02d:%02d %d%s",
-	mon[M - 1], d, h, m, s, y + 1900,
-	(gmt) ? " GMT" : ""
-	*/
-	bin2hex((uint8_t *)&time_since_epoch, sizeof(time_since_epoch), str,
-		sizeof(str) - 1, 0);
-	str[sizeof(time_since_epoch) * 2 + 1] = '\0';
+	if (lc_gmtime(time_since_epoch, &time_detail))
+		return NULL;
 
-	return PoolPrint(L"%a", str);
+	return PoolPrint(L"%.4d%-2d%-2d %2d:%2d:%2d GMT",
+			 time_detail.year, time_detail.month, time_detail.day,
+			 time_detail.hour, time_detail.min, time_detail.sec);
 }
 
 static CHAR16 *get_x509_time_valid_to_lc(const struct lc_x509_certificate *cert)
 {
+	struct lc_tm time_detail;
 	time64_t time_since_epoch;
-	char str[30];
 
 	if (lc_x509_cert_get_valid_to(cert, &time_since_epoch))
 		return NULL;
 
-	//TODO make it a nice time
-	/*
-	* BIO_printf(bp, "%s %2d %02d:%02d:%02d %d%s",
-	mon[M - 1], d, h, m, s, y + 1900,
-	(gmt) ? " GMT" : ""
-	*/
-	bin2hex((uint8_t *)&time_since_epoch, sizeof(time_since_epoch), str,
-		sizeof(str) - 1, 0);
-	str[sizeof(time_since_epoch) * 2 + 1] = '\0';
+	if (lc_gmtime(time_since_epoch, &time_detail))
+		return NULL;
 
-	return PoolPrint(L"%a", str);
+	return PoolPrint(L"%.4d%-2d%-2d %2d:%2d:%2d GMT",
+			 time_detail.year, time_detail.month, time_detail.day,
+			 time_detail.hour, time_detail.min, time_detail.sec);
 }
 
 static void show_x509_info_lc(const struct lc_x509_certificate *cert,
