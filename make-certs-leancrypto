@@ -1,0 +1,155 @@
+#!/usr/bin/env bash
+#
+#  Generate a root CA cert for signing, and then a subject cert.
+#  Usage: make-certs.sh hostname [user[@domain]] [more ...]
+#  For testing only, probably still has some bugs in it.
+#
+
+set -e
+
+if [[ ! -f `which lc_x509_generator` ]]; then
+	echo "Leancrypto not found. Install it first, then run this script again."
+	exit 1
+fi
+
+#
+# Select the desired key type for the key / certificate to be created
+#
+# In the following, these definitions are used:
+#
+# <ML-DSA type> is one of:
+#   ML-DSA87
+#   ML-DSA65
+#   ML-DSA44
+#
+# <SLH-DSA type> is one of:
+#   SLH-DSA-SHAKE-256S
+#   SLH-DSA-SHAKE-256F
+#   SLH-DSA-SHAKE-192S
+#   SLH-DSA-SHAKE-192F
+#   SLH-DSA-SHAKE-128S
+#   SLH-DSA-SHAKE-128F
+#
+# <classic type> is one of:
+#   ED448
+#   ED25519
+
+# ML-DSA Composite keys are specified by a string: <ML-DSA type>-<classic type>
+KEYTYPE="ML-DSA87-ED448"
+
+DAYS=365
+
+# Cleanup temporary files at exit.
+newcertdir=`mktemp -d`
+cleanup() {
+	test -n "$newcertdir" && rm -fr "$newcertdir"
+}
+trap cleanup EXIT
+
+# The first argument is either a common name value or a flag indicating that
+# we're doing something other than issuing a cert.
+commonname="$1"
+if test "x$commonname" = x ; then
+	echo Usage: `basename $0` 'commonname' user'[@domain]' '[more [...]]'
+	echo More:
+	echo -e \\tKey usage: "[sign|signing|encrypt|encryption|all]"
+	echo -e \\tSubject Alternative Name:
+	echo -e \\t\\tHostname: "*"
+	echo -e \\t\\tIP address: w.x.y.z
+	echo -e \\tExtended key usage:
+	echo -e \\t\\tid-kp-server-auth \| tls-server
+	echo -e \\t\\tid-kp-client-auth \| tls-client
+	echo -e \\t\\tid-kp-email-protection \| email
+	echo -e \\t\\tid-kp-code-sign \| codesign
+	echo -e \\t\\tca \| CA
+	exit 1
+fi
+
+CA=FALSE
+# Parse the arguments which indicate what sort of information we want.
+while test $# -gt 0 ; do
+	type=
+	value="$1"
+	case "$value" in
+	signing|sign)
+		keyusage="${keyusage:+${keyusage} }--keyusage keyCertSign --keyusage digitalSignature"
+		;;
+	encryption|encrypt)
+		keyusage="${keyusage:+${keyusage} }--keyusage keyEncipherment --keyusage dataEncipherment"
+		;;
+	ca|CA)
+		CA=TRUE
+		keyusage="${keyusage:+${keyusage} }--keyusage digitalSignature --keyusage keyCertSign --keyusage keyEncipherment --keyusage dataEncipherment --keyusage keyAgreement --keyusage cRLSign --keyusage critical --ca"
+		;;
+	id-*|tls-*|email|mail|codesign)
+		ekuval=`echo "$value" | tr '[A-Z]' '[a-z]' | sed 's,\-,,g'`
+		case "$ekuval" in
+		idkpserverauth|tlsserver) ekuval="--eku serverAuth"1;;
+		idkpclientauth|tlsclient) ekuval="--eku clientAuth";;
+		idkpemailprotection|email|mail) ekuval="--eku emailProtection";;
+		idkpcodesign|codesign) ekuval="--eku codeSigning";;
+		esac
+		if test -z "$eku" ; then
+			eku="$ekuval"
+		else
+			eku="$eku $ekuval"
+		fi
+		;;
+	[0-9]*.[0-9]*.[0-9]*.[0-9]*)                          type="--san-ip";;
+	*)                                                    type="--san-dns";;
+	esac
+	if test -n "$type" ; then
+		newvalue="${type} $value"
+		if test -z "$altnames" ; then
+			altnames="${newvalue}"
+		else
+			altnames="${altnames} ${newvalue}"
+		fi
+	fi
+	shift
+done
+
+# Create a new serial number and whatnot if this is a new sub-CA.
+if test "x$CA" = xTRUE ; then
+	if ! test -d "$commonname" ; then
+		mkdir "$commonname"
+	fi
+	lc_x509_generator						\
+	  ${keyusage}							\
+	  ${eku}							\
+	  ${altnames}							\
+	  --subject-cn "$commonname"					\
+	  --issuer-cn "$commonname"					\
+	  --outfile "$commonname/ca.crt"				\
+	  --sk-file "$commonname/ca.key"				\
+	  --valid-days ${DAYS}						\
+	  --create-keypair ${KEYTYPE}					\
+	  --print
+
+	ln -s $commonname "ca"
+
+	exit 0
+fi
+
+if ! test -d "ca" ; then
+	echo "CA missing"
+	exit 1
+fi
+
+if test -d "$commonname" ; then
+	echo "Certificate $commonname exists - stopping operation"
+fi
+mkdir "$commonname"
+
+lc_x509_generator						\
+  ${keyusage}							\
+  ${eku}							\
+  ${altnames}							\
+  --subject-cn "$commonname"					\
+  --outfile "$commonname/$commonname.crt"			\
+  --sk-file "$commonname/$commonname.key"			\
+  --valid-days ${DAYS}						\
+  --create-keypair ${KEYTYPE}					\
+  --x509-signer "ca/ca.crt"					\
+  --signer-sk-file "ca/ca.key"					\
+  --print
