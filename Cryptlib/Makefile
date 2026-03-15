@@ -10,7 +10,7 @@ INCLUDES	= -I$(CRYPTDIR) -I$(CRYPTDIR)/Include \
 		  $(EFI_INCLUDES) \
 		  -isystem $(TOPDIR)/include/system \
 		  -isystem $(shell $(CC) -print-file-name=include) \
-		  -I/usr/local/include -DLC_EFI_ENVIRONMENT \
+		  -I/work/build/usr/local/include -I/usr/local/include -DLC_EFI_ENVIRONMENT \
 		  -I$(TOPDIR)/include
 
 WARNFLAGS	+= -Wno-unused-parameter \

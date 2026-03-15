@@ -24,7 +24,7 @@ set -e
 #   ED25519
 
 # ML-DSA Composite keys are specified by a string: <ML-DSA type>-<classic type>
-KEYTYPE="ML-DSA87-ED448"
+KEYTYPE="ML-DSA87"
 
 # ML-DSA keys are specified by a string: <ML-DSA type>
 #KEYTYPE="ML-DSA65-ED25519"
@@ -36,24 +36,66 @@ touch -r "$BUILDROOT/usr" "$BUILDROOT/etc/.updated" "$BUILDROOT/var/.updated"
 
 mkdir -p "$OUTPUTDIR/mok/"
 
-lc_x509_generator						\
-  --keyusage keyCertSign					\
-  --keyusage critical						\
-  --ca								\
-  --subject-cn "mkosi MOK key"					\
-  --san-dns "mkosi.local"					\
-  --outfile "$OUTPUTDIR/mok/mkosi.crt"				\
-  --sk-file "$OUTPUTDIR/mok/mkosi.key"				\
-  --valid-days 3650						\
-  --create-keypair ${KEYTYPE}
+# PEM files
+keyfile="$OUTPUTDIR/mok/mkosi.pem.key"
+certfile="$OUTPUTDIR/mok/mkosi.pem"
 
-chmod 0644 "$OUTPUTDIR/mok/mkosi.crt"
-chmod 0600 "$OUTPUTDIR/mok/mkosi.key"
+# DER files
+keyfile_der="$OUTPUTDIR/mok/mkosi.key"
+certfile_der="$OUTPUTDIR/mok/mkosi.crt"
+
+# The following command is intended with leancrypto 1.7.0, because the
+# generated keys are picked up by OpenSSL via sbsign and thus require a private
+# key formatted according to PKCS#8
+LD_LIBRARY_PATH=$BUILDDIR/usr/local/lib:$BUILDDIR/usr/local/lib64	\
+$BUILDDIR/usr/local/bin/lc_x509_generator				\
+  --keyusage keyCertSign						\
+  --keyusage critical							\
+  --eku codeSigning							\
+  --subject-cn "mkosi MOK key"						\
+  --san-dns "mkosi.local"						\
+  --ca									\
+  --outfile "$certfile"							\
+  --sk-file "$keyfile"							\
+  --valid-days 3650							\
+  --create-keypair-pkcs8 ${KEYTYPE}					\
+  --pem-output
+
+#openssl genpkey -algorithm ML-DSA-87 -outform DER -out $OUTPUTDIR/mok/mkosi.key
+#openssl req -new -key $OUTPUTDIR/mok/mkosi.key -outform DER -out "$OUTPUTDIR/mok/mkosi.csr" -subj "/CN=mkosi MOK key" -addext "subjectAltName=DNS:mkosi.local"
+#openssl x509 -req -in "$OUTPUTDIR/mok/mkosi.csr" -signkey $OUTPUTDIR/mok/mkosi.key -out "$OUTPUTDIR/mok/mkosi.crt" -outform DER -days 3650
+
+chmod 0644 "$certfile"
+chmod 0600 "$keyfile"
+
+#openssl x509 -in $OUTPUTDIR/mok/mkosi.crt -inform DER -noout -text
+#openssl pkcs8 -in "$OUTPUTDIR/mok/mkosi.key" -inform DER -out "$OUTPUTDIR/mok/mkosi.key.pem" -outform PEM -nocrypt
+
+# Print certificate
+LD_LIBRARY_PATH=$BUILDDIR/usr/local/lib:$BUILDDIR/usr/local/lib64	\
+$BUILDDIR/usr/local/bin/lc_x509_generator				\
+  --print-x509 $certfile
+
+# Convert certificate PEM -> DER
+LD_LIBRARY_PATH=$BUILDDIR/usr/local/lib:$BUILDDIR/usr/local/lib64	\
+$BUILDDIR/usr/local/bin/lc_x509_generator				\
+  --convert								\
+  --x509-signer $certfile						\
+  --outfile $certfile_der
+
+# Convert secret key PEM -> DER
+LD_LIBRARY_PATH=$BUILDDIR/usr/local/lib:$BUILDDIR/usr/local/lib64	\
+$BUILDDIR/usr/local/bin/lc_x509_generator				\
+  --convert								\
+  --signer-sk-file $keyfile						\
+  --sk-file $keyfile_der
 
 mkdir -p "$BUILDROOT/boot/loader/addons"
-ukify build \
+PATH=$BUILDDIR/usr/local/libexec/leancrypto:$PATH			\
+LD_LIBRARY_PATH=$BUILDDIR/usr/local/lib:$BUILDDIR/usr/local/lib64	\
+ukify build								\
     --stub "$BUILDROOT/usr/lib/systemd/boot/efi/addon${EFI_ARCHITECTURE}.efi.stub" \
-    --cmdline="foobarbaz" \
-    --output "$BUILDROOT/boot/loader/addons/test.addon.efi" \
-    --secureboot-certificate "$OUTPUTDIR/mok/mkosi.crt" \
-    --secureboot-private-key "$OUTPUTDIR/mok/mkosi.key"
+    --cmdline="foobarbaz"						\
+    --output "$BUILDROOT/boot/loader/addons/test.addon.efi"		\
+    --secureboot-certificate "$certfile"				\
+    --secureboot-private-key "$keyfile"

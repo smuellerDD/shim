@@ -24,7 +24,7 @@ include $(TOPDIR)/include/coverity.mk
 include $(TOPDIR)/include/scan-build.mk
 include $(TOPDIR)/include/fanalyzer.mk
 
-CFLAGS += -I/usr/local/include -DLC_EFI_ENVIRONMENT
+CFLAGS += -I/work/build/usr/local/include -I/usr/local/include -DLC_EFI_ENVIRONMENT
 TARGETS	= $(SHIMNAME)
 TARGETS += $(SHIMNAME).debug $(MMNAME).debug $(FBNAME).debug
 ifneq ($(origin ENABLE_SHIM_HASH),undefined)
@@ -150,7 +150,7 @@ $(SHIMNAME) $(MMNAME) $(FBNAME) : | post-process-pe
 
 LIBS = Cryptlib/libcryptlib.a \
        Cryptlib/OpenSSL/libopenssl.a \
-       /home/sm/hacking/sources/leancrypto/leancrypto/build-shim/libleancrypto.a \
+       leancrypto-build-shim/libleancrypto.a \
        lib/lib.a \
        gnu-efi/$(ARCH_GNUEFI)/lib/libefi.a \
        gnu-efi/$(ARCH_GNUEFI)/gnuefi/libgnuefi.a
@@ -279,6 +279,7 @@ endif
 ifneq ($(OBJCOPY_GTE224),1)
 	$(error objcopy >= 2.24 is required)
 endif
+	file $<
 	$(OBJCOPY) -D -j .text -j .sdata -j .data -j .data.ident \
 		-j .dynamic -j .rodata -j .rel* \
 		-j .rela* -j .dyn -j .reloc -j .eh_frame \

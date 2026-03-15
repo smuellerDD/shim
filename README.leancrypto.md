@@ -8,7 +8,28 @@ The leancrypto library is compiled separate from the Shim boot loader code.
 During the linking of the Shim boot loader code, the leancrypto library is
 added to Shim.
 
-## Compilation of leancrypto
+## Quick Start
+
+Do the following:
+
+1. copy / unpack the leancrypto source code into the shim bootloader
+source code root directory into the `leancrypto` directory.
+
+2. invoke `leancrypto/build-scripts/shim_support.sh leancrypt` to generate
+the build directory of leancrypto of `leancrypto-build-shim`.
+
+3. compile leancrypto: `meson compile -C leancrypto-build-shim`
+
+4. optional, if no leancrypto header files are installed - if you have the
+   header files installed either via your distribution, or via a general local
+   build, skip this step: `sudo meson install -C leancrypto-build-shim`
+
+4. compile shim: `make`
+
+## Details for Compilation of leancrypto
+
+NOTE: This section is only of interest if you want to know more than what
+is outlined in the Quick Start section.
 
 The leancrypto library build system allows the configuration of the library
 to only build the functions required by the consumer. Furthermore, the
@@ -16,7 +37,7 @@ leancrypto library must be compiled for the EFI environment to work with
 the Shim boot loader.
 
 For the Shim boot loader, the following options generate an instance of
-the leancrypto library which only offer:
+the leancrypto library which only offers:
 
 * SHA2-256
 
@@ -28,24 +49,18 @@ the leancrypto library which only offer:
 
 * Composite ML-DSA with ED25519 as well as ED448
 
+NOTE: The tool used for signing the kernel referenced in
+`mkosi/mkosi.finalize`, `ukify`, links with OpenSSL to sign the data.
+As OpenSSL only supports ML-DSA, SLH-DSA as well as the composite
+signatures would not be used. Once `ukify` would be updated to link
+with leancrypto, the other signature types can be used.
+
 ```bash
-meson setup build-shim \
- -Defi=enabled \
- -Dslh_dsa_ascon_128s=disabled -Dslh_dsa_ascon_128f=disabled \
- -Dascon=disabled -Dascon_keccak=disabled \
- -Dbike_5=disabled -Dbike_3=disabled -Dbike_1=disabled \
- -Dkyber_1024=disabled -Dkyber_768=disabled -Dkyber_512=disabled -Dkyber_x25519=disabled -Dkyber_x448=disabled \
- -Dhqc_256=disabled -Dhqc_192=disabled -Dhqc_128=disabled \
- -Dchacha20=disabled -Dchacha20poly1305=disabled \
- -Dchacha20_drng=disabled -Ddrbg_hash=disabled -Ddrbg_hmac=disabled -Dkmac_drng=disabled -Dcshake_drng=disabled \
- -Dhash_crypt=disabled -Dhmac=disabled -Dhkdf=disabled -Dkdf_ctr=disabled -Dkdf_fb=disabled -Dkdf_dpi=disabled -Dpbkdf2=disabled \
- -Dhotp=disabled -Dtotp=disabled \
- -Daes_block=disabled -Daes_cbc=disabled -Daes_ctr=disabled -Daes_kw=disabled -Dapps=disabled \
- -Dx509_generator=disabled \
- -Dpkcs7_generator=disabled
+build-scripts/shim_support.sh
 ```
 
-The following options can be added if SLH-DSA shall not be compiled
+The following options can be added in the mentioned script if SLH-DSA
+shall not be compiled
 
 ```bash
  -Dsphincs_shake_256s=disabled -Dsphincs_shake_256f=disabled \
@@ -53,13 +68,15 @@ The following options can be added if SLH-DSA shall not be compiled
  -Dsphincs_shake_128s=disabled -Dsphincs_shake_128f=disabled \
 ```
 
-The following options can be added if ML-DSA shall not be compiled
+The following options can be added in the mentioned script if ML-DSA
+shall not be compiled
 
 ```bash
  -Ddilithium_87=disabled -Ddilithium_65=disabled -Ddilithium_44=disabled
 ```
 
-The following options can be added if composite ML-DSA shall not be supported
+The following options can be added in the mentioned script if composite
+ML-DSA shall not be supported
 
 ```bash
  -Ddilithium_ed25519=disabled -Ddilithium_ed448=disabled
@@ -107,6 +124,10 @@ the following files:
   
 * Makefile: The variable `LIBS` need to be extended to also point to the
   `libleancrypto.a` file.
+
+NOTE: By default, both try to find `libleancrypto.a` in the directory `Cryptlib`.
+Thus, simply copy from the leancrypto tree `build-shim/libleancrypto.a` to
+`Cryptlib`.
   
 ## Coexistance with OpenSSL
 
@@ -118,3 +139,8 @@ with the X509 support for RSA), OpenSSL is used.
 
 Once it is deemed that SHA-1 and RSA are not necessary any more, the entire
 OpenSSL code base can be removed for good from the Shim boot loader code base.
+
+# NOTES
+
+Shim should be compiled with -z noexecstack to remove the following warning:
+`ld: warning: dilithium_shuffle_avx2.S.o: missing .note.GNU-stack section implies executable stack`

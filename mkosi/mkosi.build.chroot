@@ -13,6 +13,25 @@ fi
 
 cd "$BUILDDIR"
 
+#
+# Build library for the lc_*_generator tools
+# - do not compile the tests
+# - install the compilation so that libleancrypto.so and the tools are installed
+#   into the build root to be available to the whole system
+#
+meson setup leancrypto-build $SRCDIR/leancrypto/ -Dtests=disabled -Dsbsigntools=enabled -Dbuildtype=release
+meson compile -C leancrypto-build
+meson install -C leancrypto-build --destdir $BUILDDIR
+
+#
+# Build library for linking with shim
+# - install the compilation to ensure that the correct header files are found
+#   by the shim compilation into the build directory
+#
+$SRCDIR/leancrypto/build-scripts/shim_support.sh $SRCDIR/leancrypto/
+meson compile -C leancrypto-build-shim
+meson install -C leancrypto-build-shim --destdir $BUILDDIR
+
 openssl x509 -inform PEM -in "$SRCDIR/mkosi/mkosi.conf.d/$DISTRIBUTION/certs/shim.crt" -outform DER -out shim.der
 
 export VENDOR_CERT_FILE=$PWD/shim.der
